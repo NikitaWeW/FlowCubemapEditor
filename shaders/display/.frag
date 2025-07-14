@@ -9,5 +9,5 @@ in VS_OUT {
 
 void main() 
 {
-    o_color = vec4(1);
+    o_color = vec4(fs_in.fragPos, 1);
 }

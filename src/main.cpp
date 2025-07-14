@@ -49,12 +49,11 @@ struct Mesh
 {
     ogl::VertexBuffer vbo;
     ogl::VertexArray vao;
-    ogl::IndexBuffer ibo;
-    unsigned count;
+    unsigned count = 0;
 };
 
 bool init(GLFWwindow **window);
-Mesh load(std::string_view path, bool flip = false);
+Mesh load(std::string_view path);
 
 int main(int argc, char **argv)
 {
@@ -71,6 +70,13 @@ int main(int argc, char **argv)
     ogl::ShaderProgram displayShader{"shaders/display"};
     ogl::ShaderProgram skyboxShader{"shaders/skybox"};
 
+    Mesh cube = load("res/models/cube.obj");
+
+    // ===================================
+
+    ogl::Cubemap flowCubemap{0}; // dummy argument
+
+
     // ===================================
 
     glm::ivec2 windowDim{-1};
@@ -78,31 +84,74 @@ int main(int argc, char **argv)
     long long unsigned frameCounter = 0;
     bool cameraLocked = false;
 
+    // ===================================
+
+    glEnable(GL_STENCIL_TEST);
+    glEnable(GL_MULTISAMPLE);
+    glDisable(GL_BLEND);
+    glEnable(GL_DEPTH_TEST);
+    glEnable(GL_CULL_FACE);
+    
+    glCullFace(GL_BACK);
+    glFrontFace(GL_CCW);
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+
+
     while (!glfwWindowShouldClose(window))
     {
         auto start = std::chrono::high_resolution_clock::now();
-        glfwGetWindowSize(window, &windowDim.x, &windowDim.y);
+        glfwGetFramebufferSize(window, &windowDim.x, &windowDim.y);
         glfwSetInputMode(window, GLFW_CURSOR, cameraLocked ? GLFW_CURSOR_CAPTURED : GLFW_CURSOR_NORMAL);
 
         glm::mat4 viewMat = glm::lookAt(glm::vec3{0, 3, 5}, glm::vec3{0}, glm::vec3{0,1,0});
-        glm::mat4 projMat = glm::perspective<float>(glm::radians(45.0f), windowDim.x / windowDim.y, 0.01, 100);
+        glm::mat4 projMat = glm::perspective<float>(glm::radians(45.0f), (float) windowDim.x / windowDim.y, 0.01, 100);
 
         glViewport(0, 0, windowDim.x, windowDim.y);
-        glClearColor(0, 0, 0, 1);
+        glClearColor(0.1, 0.3, 0.3, 1);
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT | GL_STENCIL_BUFFER_BIT);
-        glBindFramebuffer(GL_FRAMEBUFFER, 0);
+
+        // ============
+        // draw a cube 
+        // ============
+
+        glEnable(GL_CULL_FACE);
+        glEnable(GL_DEPTH_TEST);
+        glDepthFunc(GL_LESS);
+        glDepthMask(GL_TRUE);
+        glCullFace(GL_BACK);
+        glFrontFace(GL_CCW);
+
+        displayShader.bind();
+        
+        glUniformMatrix4fv(displayShader.getUniform("u_viewMat"),        1, GL_FALSE, &viewMat[0][0]);
+        glUniformMatrix4fv(displayShader.getUniform("u_projectionMat"),  1, GL_FALSE, &projMat[0][0]);
+        
+        cube.vao.bind();
+        glDrawArrays(GL_TRIANGLES, 0, cube.count);
+
+        // ==============
+        // draw a skybox 
+        // ==============
+
+        glDepthMask(GL_FALSE);
+        glDepthFunc(GL_LEQUAL);
+        glDisable(GL_CULL_FACE);
 
         skyboxShader.bind();
         skybox.bind(0);
 
         glUniformMatrix4fv(skyboxShader.getUniform("u_viewMat"),        1, GL_FALSE, &viewMat[0][0]);
         glUniformMatrix4fv(skyboxShader.getUniform("u_projectionMat"),  1, GL_FALSE, &projMat[0][0]);
-        glDrawArrays(GL_TRIANGLE_STRIP, 0, 14);
+
+        // vertices hard-coded in the shader
+        // glDrawArrays(GL_TRIANGLE_STRIP, 0, 14);
         
         glfwSwapBuffers(window);
         glfwPollEvents();
         deltatime = std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::high_resolution_clock::now() - start).count() * 1.0E-6;
         ++frameCounter;
+
+        while(GLenum err = glGetError() && err != GL_NO_ERROR) LOG_ERROR("opengl error: %i", err); // just in case callback doesent work
     }
     
     glfwDestroyWindow(window);
@@ -230,6 +279,7 @@ bool init(GLFWwindow **window)
 
     GLFWvidmode const *mode = glfwGetVideoMode(glfwGetPrimaryMonitor());
     *window = glfwCreateWindow(mode->width * 0.7, mode->height * 0.9, "opengl", nullptr, nullptr);
+    glfwSetWindowTitle(*window, "flow cubemap editor v1.0");
 
     if (!*window) {
         LOG_FATAL("failed to initialize window.");
@@ -262,7 +312,98 @@ bool init(GLFWwindow **window)
 
     return true;
 }
-Mesh load(std::string_view path, bool flip)
+Mesh load(std::string_view path)
 {
-    return Mesh{};
+    tinyobj::ObjReaderConfig config;
+    config.mtl_search_path = "./";
+    tinyobj::ObjReader reader;
+
+    if(!reader.ParseFromFile(std::string{path}, config)) {
+        LOG_ERROR("failed to load \"%s\"!", path.data());
+        if(!reader.Error().empty()) {
+            LOG_ERROR(reader.Error().c_str());
+        }
+        return Mesh{
+            .count = 0
+        };
+    }
+
+    if(!reader.Warning().empty()) {
+        LOG_WARN(reader.Warning().c_str());
+    }
+
+    auto &attrib = reader.GetAttrib();
+    auto &shapes = reader.GetShapes();
+    auto &materials = reader.GetMaterials();
+
+    std::vector<glm::vec3> positions{};
+    std::vector<glm::vec3> normals  {};
+    std::vector<glm::vec2> texcoords{};
+
+    Mesh mesh{};
+    mesh.count = 0;
+
+    // "unzip" the object by unpacing the indices
+    for(auto &shape : shapes) {
+        size_t index_offset = 0;
+        for(auto &face : shape.mesh.num_face_vertices) {
+            for(size_t vertex = 0; vertex < face; ++vertex) {
+                // access to vertex
+                tinyobj::index_t idx = shape.mesh.indices[index_offset + vertex];
+                assert(idx.texcoord_index >= 0);
+                assert(idx.normal_index >= 0);
+
+                positions.emplace_back(
+                    attrib.vertices[3*size_t(idx.vertex_index)+0],
+                    attrib.vertices[3*size_t(idx.vertex_index)+1],
+                    attrib.vertices[3*size_t(idx.vertex_index)+2] 
+                );
+                normals.emplace_back(
+                    attrib.normals[3*size_t(idx.normal_index)+0],
+                    attrib.normals[3*size_t(idx.normal_index)+1],
+                    attrib.normals[3*size_t(idx.normal_index)+2]
+                );
+                texcoords.emplace_back(
+                    attrib.texcoords[2*size_t(idx.texcoord_index)+0],
+                    attrib.texcoords[2*size_t(idx.texcoord_index)+1] 
+                );
+
+                ++mesh.count;
+            }
+            index_offset += face;
+            shape.mesh.material_ids[face]; // material
+        }
+    }
+
+    mesh.vbo = ogl::VertexBuffer{
+        positions.size() * sizeof(decltype(positions[0])) +
+        normals.size()   * sizeof(decltype(normals[0])) +
+        texcoords.size() * sizeof(decltype(texcoords[0]))
+    };
+
+    glNamedBufferSubData(mesh.vbo.getRenderID(), 
+        0, 
+        positions.size() * sizeof(decltype(positions[0])), 
+        positions.data()
+    );
+    glNamedBufferSubData(mesh.vbo.getRenderID(), 
+        positions.size() * sizeof(decltype(positions[0])), 
+        normals.size()   * sizeof(decltype(normals[0])),
+        normals.data()
+    );
+    glNamedBufferSubData(mesh.vbo.getRenderID(), 
+        positions.size() * sizeof(decltype(positions[0])) + normals.size() * sizeof(decltype(normals[0])), 
+        texcoords.size() * sizeof(decltype(texcoords[0])),
+        texcoords.data()
+    );
+
+    ogl::VertexBufferLayout layout = {
+        {3, GL_FLOAT, 0},
+        {3, GL_FLOAT, positions.size() * sizeof(decltype(positions[0]))},
+        {2, GL_FLOAT, positions.size() * sizeof(decltype(positions[0])) + normals.size() * sizeof(decltype(normals[0]))}
+    };
+    
+    mesh.vao = ogl::VertexArray{mesh.vbo, layout};
+
+    return mesh;
 }
