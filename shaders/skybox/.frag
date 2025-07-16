@@ -6,5 +6,5 @@ out vec4 o_color;
 
 void main() {
     o_color = texture(u_skybox, v_texCoords);
-    o_color = vec4(1.0 - exp(-o_color.rgb * /* exposure -- */ (1 / o_color.b)), o_color.a); // tone mapping
+    o_color = vec4(1.0 - exp(-o_color.rgb * /* exposure -- */ 1), o_color.a); // tone mapping
 }
