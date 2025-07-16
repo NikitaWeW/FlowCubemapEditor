@@ -51,9 +51,22 @@ struct Mesh
     ogl::VertexArray vao;
     unsigned count = 0;
 };
+struct Data
+{
+    GLFWwindow *window = nullptr;
+    // seconds
+    float deltatime = 0.1;
+    glm::dvec2 prevMousePos{0};
+    glm::vec2 yawPitch{0};
+    float distance = 3;
+    float sensitivity = 1;
+};
 
 bool init(GLFWwindow **window);
 Mesh load(std::string_view path);
+void processInput(Data &data);
+void scroll_callback(GLFWwindow* window, double xoffset, double yoffset);
+
 
 int main(int argc, char **argv)
 {
@@ -72,21 +85,18 @@ int main(int argc, char **argv)
 
     Mesh cube = load("res/models/cube.obj");
 
-    // ===================================
-
     ogl::Cubemap flowCubemap{0}; // dummy argument
-
 
     // ===================================
 
     glm::ivec2 windowDim{-1};
-    float deltatime = 0.1; // seconds
-    long long unsigned frameCounter = 0;
-    bool cameraLocked = false;
+    Data data{};
+    data.window = window;
+    glfwSetWindowUserPointer(data.window, &data);
+    glfwSetScrollCallback(data.window, scroll_callback);
 
     // ===================================
 
-    glEnable(GL_STENCIL_TEST);
     glEnable(GL_MULTISAMPLE);
     glDisable(GL_BLEND);
     glEnable(GL_DEPTH_TEST);
@@ -96,30 +106,41 @@ int main(int argc, char **argv)
     glFrontFace(GL_CCW);
     glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
 
-
     while (!glfwWindowShouldClose(window))
     {
         auto start = std::chrono::high_resolution_clock::now();
         glfwGetFramebufferSize(window, &windowDim.x, &windowDim.y);
-        glfwSetInputMode(window, GLFW_CURSOR, cameraLocked ? GLFW_CURSOR_CAPTURED : GLFW_CURSOR_NORMAL);
+        processInput(data);
 
-        glm::mat4 viewMat = glm::lookAt(glm::vec3{0, 3, 5}, glm::vec3{0}, glm::vec3{0,1,0});
+        glm::mat4 viewMat = glm::mat4{1.0f};
+        viewMat = glm::translate(
+            viewMat,
+            glm::vec3{0, 0, -data.distance}
+        );
+        viewMat = glm::rotate(
+            viewMat,
+            glm::radians(data.yawPitch.y),
+            glm::vec3{1, 0, 0}
+        );
+        viewMat = glm::rotate(
+            viewMat,
+            glm::radians(data.yawPitch.x),
+            glm::vec3{0, 1, 0}
+        );
         glm::mat4 projMat = glm::perspective<float>(glm::radians(45.0f), (float) windowDim.x / windowDim.y, 0.01, 100);
 
         glViewport(0, 0, windowDim.x, windowDim.y);
         glClearColor(0.1, 0.3, 0.3, 1);
-        glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT | GL_STENCIL_BUFFER_BIT);
+        glDepthMask(GL_TRUE);
+        glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
         // ============
         // draw a cube 
         // ============
 
-        glEnable(GL_CULL_FACE);
-        glEnable(GL_DEPTH_TEST);
         glDepthFunc(GL_LESS);
         glDepthMask(GL_TRUE);
-        glCullFace(GL_BACK);
-        glFrontFace(GL_CCW);
+        glEnable(GL_CULL_FACE);
 
         displayShader.bind();
         
@@ -145,13 +166,13 @@ int main(int argc, char **argv)
 
         // vertices hard-coded in the shader
         // glDrawArrays(GL_TRIANGLE_STRIP, 0, 14);
+
+        // ==========================
+        while(GLenum err = glGetError() && err != GL_NO_ERROR) LOG_ERROR("opengl error: %i", err); // just in case callback doesent work
         
         glfwSwapBuffers(window);
         glfwPollEvents();
-        deltatime = std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::high_resolution_clock::now() - start).count() * 1.0E-6;
-        ++frameCounter;
-
-        while(GLenum err = glGetError() && err != GL_NO_ERROR) LOG_ERROR("opengl error: %i", err); // just in case callback doesent work
+        data.deltatime = std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::high_resolution_clock::now() - start).count() * 1.0E-6;
     }
     
     glfwDestroyWindow(window);
@@ -371,7 +392,7 @@ Mesh load(std::string_view path)
                 ++mesh.count;
             }
             index_offset += face;
-            shape.mesh.material_ids[face]; // material
+            // shape.mesh.material_ids[face]; // material
         }
     }
 
@@ -406,4 +427,25 @@ Mesh load(std::string_view path)
     mesh.vao = ogl::VertexArray{mesh.vbo, layout};
 
     return mesh;
+}
+void processInput(Data &data)
+{
+    assert(data.window);
+    bool cameraLocked = glfwGetMouseButton(data.window, GLFW_MOUSE_BUTTON_RIGHT) == GLFW_PRESS;
+    glfwSetInputMode(data.window, GLFW_CURSOR, cameraLocked ? GLFW_CURSOR_CAPTURED : GLFW_CURSOR_NORMAL);
+    glm::dvec2 mousePos{0};
+    glfwGetCursorPos(data.window, &mousePos.x, &mousePos.y);
+    glm::vec2 deltaMouse = mousePos - data.prevMousePos;
+    data.prevMousePos = mousePos;
+
+    if(cameraLocked) 
+    {
+        data.yawPitch += deltaMouse * data.deltatime * 1000.0f * data.sensitivity;
+    }
+}
+void scroll_callback(GLFWwindow* window, double xoffset, double yoffset)
+{
+    Data &data = *static_cast<Data *>(glfwGetWindowUserPointer(window));
+
+    data.distance -= yoffset * data.deltatime * 100.0f * data.sensitivity;
 }
