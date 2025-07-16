@@ -30,9 +30,9 @@ namespace ogl
     {
     public:
         Cubemap() = default;
+        Cubemap(std::filesystem::path const &filepath, bool flip = false);
         explicit Cubemap(unsigned) noexcept;
         // load equirectangular projection as a cube map
-        explicit Cubemap(std::filesystem::path const &filepath, bool flip = false);
         void bind(unsigned slot = 0) const noexcept override;
     };
 } // namespace ogl

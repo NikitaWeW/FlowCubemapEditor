@@ -98,7 +98,7 @@ int main(int argc, char **argv)
 
     // ===================================
 
-    ogl::Cubemap skybox{"res/textures/qwantani_dawn_puresky_2k.hdr"};
+    ogl::Cubemap skybox{"res/textures/kloppenheim_06_puresky_2k.hdr"};
     ogl::ShaderProgram displayShader{"shaders/display"};
     ogl::ShaderProgram skyboxShader{"shaders/skybox"};
 
@@ -117,7 +117,7 @@ int main(int argc, char **argv)
 
     // ===================================
 
-    glDisable(GL_FRAMEBUFFER_SRGB);
+    glEnable(GL_FRAMEBUFFER_SRGB);
     glEnable(GL_MULTISAMPLE);
     glDisable(GL_BLEND);
     glEnable(GL_DEPTH_TEST);
@@ -462,7 +462,7 @@ void processInput(Data &data)
 
     if(cameraLocked) 
     {
-        data.yawPitch.velocity += deltaMouse * data.deltatime * data.sensitivity;
+        data.yawPitch.velocity += deltaMouse * data.deltatime * data.sensitivity * 2.0f;
     }
 
     data.yawPitch.update(data.deltatime);

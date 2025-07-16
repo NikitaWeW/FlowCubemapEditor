@@ -204,7 +204,13 @@ ogl::Cubemap::Cubemap(std::filesystem::path const &filepath, bool flip)
     glTextureParameteri(m_renderID, GL_TEXTURE_MAX_LEVEL, 0);
     glTextureParameteri(m_renderID, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
     glTextureParameteri(m_renderID, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-    glTextureStorage2D(m_renderID, 1, GL_RGB32F, cubemapBitmaps[0].getWidth(), cubemapBitmaps[0].getHeight());
+    glTextureStorage2D(
+        m_renderID, 
+        1, 
+        GL_RGB16F, 
+        cubemapBitmaps[0].getWidth(), 
+        cubemapBitmaps[0].getHeight()
+    );
 
     for (unsigned i = 0; i < NUM_FACES_IN_CUBEMAP; ++i) {
         const void* sourceImage = cubemapBitmaps[i].getData();
