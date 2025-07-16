@@ -32,6 +32,7 @@
 
 #include "logger.h"
 #include "tiny_obj_loader.h"
+#include "ease_functions.hpp"
 
 #include "opengl/Framebuffer.hpp"
 #include "opengl/Texture.hpp"
@@ -51,22 +52,40 @@ struct Mesh
     ogl::VertexArray vao;
     unsigned count = 0;
 };
+template <typename T>
+struct VelocityVariable
+{
+    ease::easeFuncPtr<T> easeFunc = ease::outCirc<T>;
+    T velocity = T{0};
+    T value = T{0};
+    T falloff = T{1};
+    glm::vec2 edges{0.0f, 10.0f};
+
+    inline void update(float deltatime)
+    {
+        value += velocity * deltatime;
+        T x = glm::clamp((glm::abs(velocity) - T{edges.x}) / (T{edges.y} - T{edges.x}), T{0}, T{1});
+        T curve = easeFunc(x);
+        velocity -= velocity * curve * deltatime * falloff;
+    }
+};
 struct Data
 {
     GLFWwindow *window = nullptr;
     // seconds
     float deltatime = 0.1;
     glm::dvec2 prevMousePos{0};
-    glm::vec2 yawPitch{0};
-    float distance = 3;
-    float sensitivity = 1;
+    VelocityVariable<glm::vec2> yawPitch;
+    VelocityVariable<float> distance{
+        .value = 3
+    };
+    float sensitivity = 500;
 };
 
 bool init(GLFWwindow **window);
 Mesh load(std::string_view path);
 void processInput(Data &data);
 void scroll_callback(GLFWwindow* window, double xoffset, double yoffset);
-
 
 int main(int argc, char **argv)
 {
@@ -92,11 +111,13 @@ int main(int argc, char **argv)
     glm::ivec2 windowDim{-1};
     Data data{};
     data.window = window;
+    data.distance.falloff = 10;
     glfwSetWindowUserPointer(data.window, &data);
     glfwSetScrollCallback(data.window, scroll_callback);
 
     // ===================================
 
+    glDisable(GL_FRAMEBUFFER_SRGB);
     glEnable(GL_MULTISAMPLE);
     glDisable(GL_BLEND);
     glEnable(GL_DEPTH_TEST);
@@ -112,19 +133,20 @@ int main(int argc, char **argv)
         glfwGetFramebufferSize(window, &windowDim.x, &windowDim.y);
         processInput(data);
 
+
         glm::mat4 viewMat = glm::mat4{1.0f};
         viewMat = glm::translate(
             viewMat,
-            glm::vec3{0, 0, -data.distance}
+            glm::vec3{0, 0, -data.distance.value}
         );
         viewMat = glm::rotate(
             viewMat,
-            glm::radians(data.yawPitch.y),
+            glm::radians(data.yawPitch.value.y),
             glm::vec3{1, 0, 0}
         );
         viewMat = glm::rotate(
             viewMat,
-            glm::radians(data.yawPitch.x),
+            glm::radians(data.yawPitch.value.x),
             glm::vec3{0, 1, 0}
         );
         glm::mat4 projMat = glm::perspective<float>(glm::radians(45.0f), (float) windowDim.x / windowDim.y, 0.01, 100);
@@ -165,7 +187,7 @@ int main(int argc, char **argv)
         glUniformMatrix4fv(skyboxShader.getUniform("u_projectionMat"),  1, GL_FALSE, &projMat[0][0]);
 
         // vertices hard-coded in the shader
-        // glDrawArrays(GL_TRIANGLE_STRIP, 0, 14);
+        glDrawArrays(GL_TRIANGLE_STRIP, 0, 14);
 
         // ==========================
         while(GLenum err = glGetError() && err != GL_NO_ERROR) LOG_ERROR("opengl error: %i", err); // just in case callback doesent work
@@ -440,12 +462,17 @@ void processInput(Data &data)
 
     if(cameraLocked) 
     {
-        data.yawPitch += deltaMouse * data.deltatime * 1000.0f * data.sensitivity;
+        data.yawPitch.velocity += deltaMouse * data.deltatime * data.sensitivity;
     }
+
+    data.yawPitch.update(data.deltatime);
+    data.yawPitch.falloff = glm::mix(glm::vec2{1.0f}, glm::vec2{5.0f}, static_cast<float>(!cameraLocked));
+    data.distance.update(data.deltatime);
+    data.distance.value = glm::clamp<float>(data.distance.value, 1, 5);
 }
 void scroll_callback(GLFWwindow* window, double xoffset, double yoffset)
 {
     Data &data = *static_cast<Data *>(glfwGetWindowUserPointer(window));
 
-    data.distance -= yoffset * data.deltatime * 100.0f * data.sensitivity;
+    data.distance.velocity -= yoffset * data.deltatime * data.sensitivity;
 }

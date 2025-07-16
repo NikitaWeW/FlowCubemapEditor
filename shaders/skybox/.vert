@@ -25,5 +25,5 @@ uniform mat4 u_viewMat;
 void main() {
     vec3 position = cubePositions[gl_VertexID];
     v_texCoords = position;
-    gl_Position = u_projectionMat * mat4(mat3(u_viewMat)) * vec4(position, 1);
+    gl_Position = (u_projectionMat * mat4(mat3(u_viewMat)) * vec4(position, 1)).xyww;
 }
