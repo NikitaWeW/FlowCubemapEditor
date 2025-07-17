@@ -82,6 +82,12 @@ struct Data
     float sensitivity = 500;
 };
 
+int main(int argc, char **argv);
+
+constexpr unsigned NUM_SAMPLES = 4;
+
+void resizeColorAttachment(ogl::Framebuffer &fbo, ogl::Texture &texture, glm::ivec2 size, GLenum attachment = GL_COLOR_ATTACHMENT0);
+void resizeColorAttachment(ogl::Framebuffer &fbo, ogl::TextureMS &texture, glm::ivec2 size, GLenum attachment = GL_COLOR_ATTACHMENT0);
 bool init(GLFWwindow **window);
 Mesh load(std::string_view path);
 void processInput(Data &data);
@@ -104,6 +110,10 @@ int main(int argc, char **argv)
 
     Mesh cube = load("res/models/cube.obj");
 
+    ogl::Framebuffer mainFBO;
+    ogl::Renderbuffer mainRBO{0};
+    ogl::TextureMS mainColor{GL_LINEAR, GL_CLAMP_TO_EDGE};
+
     ogl::Cubemap flowCubemap{0}; // dummy argument
 
     // ===================================
@@ -117,8 +127,6 @@ int main(int argc, char **argv)
 
     // ===================================
 
-    glEnable(GL_FRAMEBUFFER_SRGB);
-    glEnable(GL_MULTISAMPLE);
     glDisable(GL_BLEND);
     glEnable(GL_DEPTH_TEST);
     glEnable(GL_CULL_FACE);
@@ -129,10 +137,30 @@ int main(int argc, char **argv)
 
     while (!glfwWindowShouldClose(window))
     {
+        ImGui_ImplOpenGL3_NewFrame();
+        ImGui_ImplGlfw_NewFrame();
+        ImGui::NewFrame();
+        
+        ImGui::Begin("editor");
+        
         auto start = std::chrono::high_resolution_clock::now();
+        glm::ivec2 prevDim = windowDim;
         glfwGetFramebufferSize(window, &windowDim.x, &windowDim.y);
-        processInput(data);
 
+        if(windowDim != prevDim)
+        { // resize dr3awbuffers
+            glNamedRenderbufferStorageMultisample(mainRBO.getRenderID(), NUM_SAMPLES, GL_DEPTH24_STENCIL8, windowDim.x, windowDim.y);
+            resizeColorAttachment(mainFBO, mainColor, windowDim);
+        }
+        if(mainFBO.getRenderID() == 0)
+        {
+            mainFBO = ogl::Framebuffer{0}; // dummy argument
+            mainFBO.attach(mainColor, GL_COLOR_ATTACHMENT0);
+            mainFBO.attach(mainRBO, GL_DEPTH_STENCIL_ATTACHMENT);
+            assert(mainFBO.isComplete());
+        }
+        
+        processInput(data);
 
         glm::mat4 viewMat = glm::mat4{1.0f};
         viewMat = glm::translate(
@@ -151,10 +179,15 @@ int main(int argc, char **argv)
         );
         glm::mat4 projMat = glm::perspective<float>(glm::radians(45.0f), (float) windowDim.x / windowDim.y, 0.01, 100);
 
+        // ==========================
+
+        mainFBO.bind();
+        glEnable(GL_FRAMEBUFFER_SRGB);
+
+
         glViewport(0, 0, windowDim.x, windowDim.y);
-        glClearColor(0.1, 0.3, 0.3, 1);
         glDepthMask(GL_TRUE);
-        glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+        glClear(GL_DEPTH_BUFFER_BIT);
 
         // ============
         // draw a cube 
@@ -189,8 +222,23 @@ int main(int argc, char **argv)
         // vertices hard-coded in the shader
         glDrawArrays(GL_TRIANGLE_STRIP, 0, 14);
 
+        glDisable(GL_FRAMEBUFFER_SRGB);
+        glBindFramebuffer(GL_FRAMEBUFFER, 0);
+
+        glBlitNamedFramebuffer(mainFBO.getRenderID(), 0, 0, 0, windowDim.x, windowDim.y, 0, 0, windowDim.x, windowDim.y, GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT, GL_NEAREST);
+
+        ImGui::End();
+
         // ==========================
-        while(GLenum err = glGetError() && err != GL_NO_ERROR) LOG_ERROR("opengl error: %i", err); // just in case callback doesent work
+        
+        ImGui::ShowDemoWindow();
+        
+        // ==========================
+
+        ImGui::Render();
+        ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
+
+        // ==========================
         
         glfwSwapBuffers(window);
         glfwPollEvents();
@@ -199,6 +247,9 @@ int main(int argc, char **argv)
     
     glfwDestroyWindow(window);
     glfwTerminate();
+    ImGui_ImplOpenGL3_Shutdown();
+    ImGui_ImplGlfw_Shutdown();
+    ImGui::DestroyContext();
 }
 void APIENTRY debugCallback(GLenum source, GLenum type, GLuint id, GLenum severity, GLsizei length, const GLchar *msg, const void *objMesh)
 {
@@ -306,6 +357,28 @@ void APIENTRY debugCallback(GLenum source, GLenum type, GLuint id, GLenum severi
             error.source.c_str(), 
             error.msg.c_str());
 }
+void resizeColorAttachment(ogl::Framebuffer &fbo, ogl::TextureMS &texture, glm::ivec2 size, GLenum attachment)
+{
+    glDeleteTextures(1, &texture.getRenderID());
+    glCreateTextures(GL_TEXTURE_2D_MULTISAMPLE, 1, &texture.getRenderID());
+    glTextureStorage2DMultisample(texture.getRenderID(), NUM_SAMPLES, GL_RGBA16F, size.x, size.y, true);
+    if(fbo.getRenderID() != 0)
+    {
+        fbo.attach(texture, GL_COLOR_ATTACHMENT0);
+        assert(fbo.isComplete());
+    }
+}
+void resizeColorAttachment(ogl::Framebuffer &fbo, ogl::Texture &texture, glm::ivec2 size, GLenum attachment)
+{
+    glDeleteTextures(1, &texture.getRenderID());
+    glCreateTextures(GL_TEXTURE_2D, 1, &texture.getRenderID());
+    glTextureStorage2D(texture.getRenderID(), 1, GL_RGBA16F, size.x, size.y);
+    if(fbo.getRenderID() != 0)
+    {
+        fbo.attach(texture, GL_COLOR_ATTACHMENT0);
+        assert(fbo.isComplete());
+    }
+}
 bool init(GLFWwindow **window)
 {
     if (!glfwInit()) {
@@ -317,7 +390,7 @@ bool init(GLFWwindow **window)
     glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_COMPAT_PROFILE);
     glfwWindowHint(GLFW_OPENGL_DEBUG_CONTEXT, GLFW_TRUE);
     glfwWindowHint(GLFW_DECORATED, GLFW_TRUE);
-    glfwWindowHint(GLFW_SAMPLES, 4);
+    glfwWindowHint(GLFW_SAMPLES, NUM_SAMPLES);
     glfwWindowHint(GLFW_SRGB_CAPABLE, GLFW_TRUE);
 
     GLFWvidmode const *mode = glfwGetVideoMode(glfwGetPrimaryMonitor());
@@ -453,7 +526,7 @@ Mesh load(std::string_view path)
 void processInput(Data &data)
 {
     assert(data.window);
-    bool cameraLocked = glfwGetMouseButton(data.window, GLFW_MOUSE_BUTTON_RIGHT) == GLFW_PRESS;
+    bool cameraLocked = glfwGetMouseButton(data.window, GLFW_MOUSE_BUTTON_RIGHT) == GLFW_PRESS && ImGui::IsWindowFocused();
     glfwSetInputMode(data.window, GLFW_CURSOR, cameraLocked ? GLFW_CURSOR_CAPTURED : GLFW_CURSOR_NORMAL);
     glm::dvec2 mousePos{0};
     glfwGetCursorPos(data.window, &mousePos.x, &mousePos.y);
@@ -462,7 +535,7 @@ void processInput(Data &data)
 
     if(cameraLocked) 
     {
-        data.yawPitch.velocity += deltaMouse * data.deltatime * data.sensitivity * 2.0f;
+        data.yawPitch.velocity += deltaMouse * data.deltatime * data.sensitivity;
     }
 
     data.yawPitch.update(data.deltatime);
