@@ -85,6 +85,7 @@ struct Data
 int main(int argc, char **argv);
 
 constexpr unsigned NUM_SAMPLES = 4;
+constexpr std::string_view EDITOR_WINDOW_NAME = "editor";
 
 void resizeColorAttachment(ogl::Framebuffer &fbo, ogl::Texture &texture, glm::ivec2 size, GLenum attachment = GL_COLOR_ATTACHMENT0);
 void resizeColorAttachment(ogl::Framebuffer &fbo, ogl::TextureMS &texture, glm::ivec2 size, GLenum attachment = GL_COLOR_ATTACHMENT0);
@@ -105,7 +106,8 @@ int main(int argc, char **argv)
     // ===================================
 
     ogl::Cubemap skybox{"res/textures/kloppenheim_06_puresky_2k.hdr"};
-    ogl::ShaderProgram displayShader{"shaders/display"};
+    ogl::ShaderProgram cubeShader{"shaders/prop"};
+    ogl::ShaderProgram displayShader{"shaders/hdrImage"};
     ogl::ShaderProgram skyboxShader{"shaders/skybox"};
 
     Mesh cube = load("res/models/cube.obj");
@@ -114,11 +116,15 @@ int main(int argc, char **argv)
     ogl::Renderbuffer mainRBO{0};
     ogl::TextureMS mainColor{GL_LINEAR, GL_CLAMP_TO_EDGE};
 
+    ogl::Framebuffer displayFBO;
+    ogl::Renderbuffer displayRBO{0};
+    ogl::Texture displayTexture{GL_LINEAR, GL_LINEAR, GL_CLAMP_TO_EDGE};
+
     ogl::Cubemap flowCubemap{0}; // dummy argument
 
     // ===================================
 
-    glm::ivec2 windowDim{-1};
+    glm::ivec2 windowSize{-1};
     Data data{};
     data.window = window;
     data.distance.falloff = 10;
@@ -141,16 +147,20 @@ int main(int argc, char **argv)
         ImGui_ImplGlfw_NewFrame();
         ImGui::NewFrame();
         
-        ImGui::Begin("editor");
+        ImGui::Begin(EDITOR_WINDOW_NAME.data());
         
         auto start = std::chrono::high_resolution_clock::now();
-        glm::ivec2 prevDim = windowDim;
-        glfwGetFramebufferSize(window, &windowDim.x, &windowDim.y);
+        glm::ivec2 prevDim = windowSize;
+        windowSize = { ImGui::GetContentRegionAvail().x, ImGui::GetContentRegionAvail().y };
+        windowSize = glm::max(windowSize, glm::ivec2{1}); // imgui has weird negative size when folded 
 
-        if(windowDim != prevDim)
-        { // resize dr3awbuffers
-            glNamedRenderbufferStorageMultisample(mainRBO.getRenderID(), NUM_SAMPLES, GL_DEPTH24_STENCIL8, windowDim.x, windowDim.y);
-            resizeColorAttachment(mainFBO, mainColor, windowDim);
+        if(windowSize != prevDim)
+        { // resize drawbuffers
+            resizeColorAttachment(mainFBO, mainColor, windowSize);
+            glNamedRenderbufferStorageMultisample(mainRBO.getRenderID(), NUM_SAMPLES, GL_DEPTH24_STENCIL8, windowSize.x, windowSize.y);
+
+            resizeColorAttachment(displayFBO, displayTexture, windowSize);
+            glNamedRenderbufferStorage(displayRBO.getRenderID(), GL_DEPTH24_STENCIL8, windowSize.x, windowSize.y);
         }
         if(mainFBO.getRenderID() == 0)
         {
@@ -159,7 +169,20 @@ int main(int argc, char **argv)
             mainFBO.attach(mainRBO, GL_DEPTH_STENCIL_ATTACHMENT);
             assert(mainFBO.isComplete());
         }
-        
+        if(displayFBO.getRenderID() == 0)
+        {
+            displayFBO = ogl::Framebuffer{0};
+            displayFBO.attach(displayTexture, GL_COLOR_ATTACHMENT0);
+            displayFBO.attach(displayRBO, GL_DEPTH_STENCIL_ATTACHMENT);
+            assert(displayFBO.isComplete());
+        }
+        // why tf do i have to do it every fucking frame???
+        mainFBO.attach(mainColor, GL_COLOR_ATTACHMENT0);
+        assert(mainFBO.isComplete());
+
+        displayFBO.attach(displayTexture, GL_COLOR_ATTACHMENT0);
+        assert(displayFBO.isComplete());
+
         processInput(data);
 
         glm::mat4 viewMat = glm::mat4{1.0f};
@@ -177,15 +200,13 @@ int main(int argc, char **argv)
             glm::radians(data.yawPitch.value.x),
             glm::vec3{0, 1, 0}
         );
-        glm::mat4 projMat = glm::perspective<float>(glm::radians(45.0f), (float) windowDim.x / windowDim.y, 0.01, 100);
+        glm::mat4 projMat = glm::perspective<float>(glm::radians(45.0f), (float) windowSize.x / windowSize.y, 0.01, 100);
 
         // ==========================
 
         mainFBO.bind();
-        glEnable(GL_FRAMEBUFFER_SRGB);
 
-
-        glViewport(0, 0, windowDim.x, windowDim.y);
+        glViewport(0, 0, windowSize.x, windowSize.y);
         glDepthMask(GL_TRUE);
         glClear(GL_DEPTH_BUFFER_BIT);
 
@@ -197,10 +218,10 @@ int main(int argc, char **argv)
         glDepthMask(GL_TRUE);
         glEnable(GL_CULL_FACE);
 
-        displayShader.bind();
+        cubeShader.bind();
         
-        glUniformMatrix4fv(displayShader.getUniform("u_viewMat"),        1, GL_FALSE, &viewMat[0][0]);
-        glUniformMatrix4fv(displayShader.getUniform("u_projectionMat"),  1, GL_FALSE, &projMat[0][0]);
+        glUniformMatrix4fv(cubeShader.getUniform("u_viewMat"),        1, GL_FALSE, &viewMat[0][0]);
+        glUniformMatrix4fv(cubeShader.getUniform("u_projectionMat"),  1, GL_FALSE, &projMat[0][0]);
         
         cube.vao.bind();
         glDrawArrays(GL_TRIANGLES, 0, cube.count);
@@ -222,26 +243,50 @@ int main(int argc, char **argv)
         // vertices hard-coded in the shader
         glDrawArrays(GL_TRIANGLE_STRIP, 0, 14);
 
-        glDisable(GL_FRAMEBUFFER_SRGB);
+        // ============================================
+        // draw to a display texture + post processing 
+        // ============================================
+
+        glDepthFunc(GL_ALWAYS);
+
+        displayFBO.bind();
+        displayShader.bind();
+        mainColor.bind(0);
+        // vertices hard-coded in the shader
+        glDrawArrays(GL_TRIANGLE_STRIP, 0, 3);
+
         glBindFramebuffer(GL_FRAMEBUFFER, 0);
+        glDepthFunc(GL_ALWAYS);
 
-        glBlitNamedFramebuffer(mainFBO.getRenderID(), 0, 0, 0, windowDim.x, windowDim.y, 0, 0, windowDim.x, windowDim.y, GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT, GL_NEAREST);
+        glClearColor(0, 0, 0, 0);
+        glClear(GL_COLOR_BUFFER_BIT);
 
-        ImGui::End();
+        // ==========================================
+        // draw a display texture to an imgui window 
+        // ==========================================
+
+        ImVec2 cursorPos = ImGui::GetCursorScreenPos();
+        ImGui::GetWindowDrawList()->AddImage(
+            reinterpret_cast<void *>(displayTexture.getRenderID()),
+            cursorPos,
+            ImVec2(cursorPos.x + windowSize.x, cursorPos.y + windowSize.y),
+            ImVec2(0, 1), 
+            ImVec2(1, 0)
+        );
+
+        ImGui::End(); // editor
 
         // ==========================
         
         ImGui::ShowDemoWindow();
         
         // ==========================
-
+        
+        glfwPollEvents();
         ImGui::Render();
         ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
-
-        // ==========================
-        
+        ImGui::UpdatePlatformWindows();
         glfwSwapBuffers(window);
-        glfwPollEvents();
         data.deltatime = std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::high_resolution_clock::now() - start).count() * 1.0E-6;
     }
     
@@ -360,6 +405,7 @@ void APIENTRY debugCallback(GLenum source, GLenum type, GLuint id, GLenum severi
 void resizeColorAttachment(ogl::Framebuffer &fbo, ogl::TextureMS &texture, glm::ivec2 size, GLenum attachment)
 {
     glDeleteTextures(1, &texture.getRenderID());
+    texture.getRenderID() = 0;
     glCreateTextures(GL_TEXTURE_2D_MULTISAMPLE, 1, &texture.getRenderID());
     glTextureStorage2DMultisample(texture.getRenderID(), NUM_SAMPLES, GL_RGBA16F, size.x, size.y, true);
     if(fbo.getRenderID() != 0)
@@ -371,6 +417,7 @@ void resizeColorAttachment(ogl::Framebuffer &fbo, ogl::TextureMS &texture, glm::
 void resizeColorAttachment(ogl::Framebuffer &fbo, ogl::Texture &texture, glm::ivec2 size, GLenum attachment)
 {
     glDeleteTextures(1, &texture.getRenderID());
+    texture.getRenderID() = 0;
     glCreateTextures(GL_TEXTURE_2D, 1, &texture.getRenderID());
     glTextureStorage2D(texture.getRenderID(), 1, GL_RGBA16F, size.x, size.y);
     if(fbo.getRenderID() != 0)
@@ -410,9 +457,9 @@ bool init(GLFWwindow **window)
     ImGui::CreateContext();
     IMGUI_CHECKVERSION();
     ImGuiIO &io = ImGui::GetIO();
-    io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;     // Enable Keyboard Controls
-    io.ConfigFlags |= ImGuiConfigFlags_NavEnableGamepad;      // Enable Gamepad Controls
-    io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;         // Enable Docking
+    io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
+    io.ConfigFlags |= ImGuiConfigFlags_NavEnableGamepad;
+    io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;
     if(getenv("WAYLAND_DISPLAY")) 
         LOG_INFO("wayland detected! imgui multiple viewports feature is not supported!");
     else 
@@ -526,7 +573,9 @@ Mesh load(std::string_view path)
 void processInput(Data &data)
 {
     assert(data.window);
+    ImGui::Begin(EDITOR_WINDOW_NAME.data());
     bool cameraLocked = glfwGetMouseButton(data.window, GLFW_MOUSE_BUTTON_RIGHT) == GLFW_PRESS && ImGui::IsWindowFocused();
+    ImGui::End();
     glfwSetInputMode(data.window, GLFW_CURSOR, cameraLocked ? GLFW_CURSOR_CAPTURED : GLFW_CURSOR_NORMAL);
     glm::dvec2 mousePos{0};
     glfwGetCursorPos(data.window, &mousePos.x, &mousePos.y);
@@ -546,6 +595,11 @@ void processInput(Data &data)
 void scroll_callback(GLFWwindow* window, double xoffset, double yoffset)
 {
     Data &data = *static_cast<Data *>(glfwGetWindowUserPointer(window));
-
-    data.distance.velocity -= yoffset * data.deltatime * data.sensitivity;
+    ImGui::Begin(EDITOR_WINDOW_NAME.data());
+    if(ImGui::IsWindowFocused()) {
+        data.distance.velocity -= yoffset * data.deltatime * data.sensitivity;
+    } else {
+        ImGui_ImplGlfw_ScrollCallback(window, xoffset, yoffset);
+    }
+    ImGui::End();
 }

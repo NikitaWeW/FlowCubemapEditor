@@ -17,7 +17,7 @@ void ogl::Framebuffer::bind(unsigned slot) const noexcept
 }
 bool ogl::Framebuffer::isComplete()
 {
-    return glCheckFramebufferStatus(GL_FRAMEBUFFER) == GL_FRAMEBUFFER_COMPLETE;
+    return glCheckNamedFramebufferStatus(m_renderID, GL_FRAMEBUFFER) == GL_FRAMEBUFFER_COMPLETE;
 }
 
 void ogl::Framebuffer::attach(Texture const &texture, GLenum attachment)

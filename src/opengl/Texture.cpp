@@ -9,13 +9,12 @@ constexpr unsigned NUM_FACES_IN_CUBEMAP = 6;
 
 ogl::Texture::Texture(GLenum filtermin, GLenum filtermag, GLenum wrap) noexcept
 {
-    glGenTextures(1, &m_renderID);
-    bind();
+    glCreateTextures(GL_TEXTURE_2D, 1, &m_renderID);
     
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, filtermin);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, filtermag);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, wrap);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, wrap);
+    glTextureParameteri(m_renderID, GL_TEXTURE_MIN_FILTER, filtermin);
+    glTextureParameteri(m_renderID, GL_TEXTURE_MAG_FILTER, filtermag);
+    glTextureParameteri(m_renderID, GL_TEXTURE_WRAP_S, wrap);
+    glTextureParameteri(m_renderID, GL_TEXTURE_WRAP_T, wrap);
 }
 ogl::Texture::Texture(std::filesystem::path const &filepath, bool flip, bool srgb, std::string const &type, bool *isGrayScalePtr) : type(type)
 {
@@ -76,13 +75,7 @@ void ogl::Texture::bind(unsigned slot) const noexcept
 
 ogl::TextureMS::TextureMS(GLenum filter, GLenum wrap) noexcept
 {
-    glGenTextures(1, &m_renderID);
-    bind();
-
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, filter);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, filter);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, wrap);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, wrap);
+    glCreateTextures(GL_TEXTURE_2D_MULTISAMPLE, 1, &m_renderID);
 }
 ogl::TextureMS::~TextureMS()
 {
