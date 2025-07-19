@@ -440,8 +440,13 @@ bool init(GLFWwindow **window)
     glfwWindowHint(GLFW_SAMPLES, NUM_SAMPLES);
     glfwWindowHint(GLFW_SRGB_CAPABLE, GLFW_TRUE);
 
+    glfwWindowHint(GLFW_MOUSE_PASSTHROUGH, GLFW_TRUE);
+    glfwWindowHint(GLFW_TRANSPARENT_FRAMEBUFFER, GLFW_TRUE);
+    glfwWindowHint(GLFW_DECORATED, GLFW_FALSE);
+    glfwWindowHint(GLFW_MAXIMIZED, GLFW_TRUE);
+
     GLFWvidmode const *mode = glfwGetVideoMode(glfwGetPrimaryMonitor());
-    *window = glfwCreateWindow(mode->width * 0.7, mode->height * 0.9, "opengl", nullptr, nullptr);
+    *window = glfwCreateWindow(mode->width, mode->height, "opengl", glfwGetPrimaryMonitor(), nullptr);
     glfwSetWindowTitle(*window, "flow cubemap editor v1.0");
 
     if (!*window) {
