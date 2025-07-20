@@ -91,7 +91,7 @@ struct Data
 int main(int argc, char **argv);
 
 constexpr unsigned NUM_SAMPLES = 4;
-constexpr std::string_view EDITOR_WINDOW_NAME = "editor";
+constexpr std::string_view CONFIG_WINDOW_NAME = "Dear ImGui Demo"; // placeholder
 constexpr float ZNEAR = 0.01;
 constexpr float ZFAR = 100;
 
@@ -156,13 +156,17 @@ int main(int argc, char **argv)
         ImGui_ImplOpenGL3_NewFrame();
         ImGui_ImplGlfw_NewFrame();
         ImGui::NewFrame();
-        
-        ImGui::Begin(EDITOR_WINDOW_NAME.data());
+        ImGuiIO &io = ImGui::GetIO();
+
+        if (io.ConfigFlags & ImGuiConfigFlags_DockingEnable)
+        {
+            ImGuiID dockspace_id = ImGui::GetID("Editor DockSpace");
+            ImGui::DockSpaceOverViewport(dockspace_id, ImGui::GetMainViewport(), ImGuiDockNodeFlags_PassthruCentralNode);
+        }
         
         auto start = std::chrono::high_resolution_clock::now();
         glm::ivec2 prevDim = data.windowSize;
-        data.windowSize = { ImGui::GetContentRegionAvail().x, ImGui::GetContentRegionAvail().y };
-        data.windowSize = glm::max(data.windowSize, glm::ivec2{1}); // imgui has weird negative size when folded 
+        glfwGetFramebufferSize(window, &data.windowSize.x, &data.windowSize.y);
 
         if(data.windowSize != prevDim)
         { // resize drawbuffers
@@ -235,7 +239,7 @@ int main(int argc, char **argv)
         // ============
 
         glDepthFunc(GL_LESS);
-        glDepthMask(GL_TRUE);
+        glDepthMask(GL_FALSE);
         glDisable(GL_CULL_FACE);
 
         gridShader.bind();
@@ -258,27 +262,18 @@ int main(int argc, char **argv)
         mainColor.bind(0);
         // vertices hard-coded in the shader
         glDrawArrays(GL_TRIANGLE_STRIP, 0, 3);
+        
+        // ==========================
+        // display a display texture  
+        // ==========================
 
         glBindFramebuffer(GL_FRAMEBUFFER, 0);
         glDepthFunc(GL_ALWAYS);
 
-        glClearColor(0, 0, 0, 0);
+        glClearColor(0, 0, 0, 1);
         glClear(GL_COLOR_BUFFER_BIT);
 
-        // =======================
-        // draw a display texture  
-        // =======================
-
-        ImVec2 cursorPos = ImGui::GetCursorScreenPos();
-        ImGui::GetWindowDrawList()->AddImage(
-            reinterpret_cast<void *>(displayTexture.getRenderID()),
-            cursorPos,
-            ImVec2(cursorPos.x + data.windowSize.x, cursorPos.y + data.windowSize.y),
-            ImVec2(0, 1), 
-            ImVec2(1, 0)
-        );
-
-        ImGui::End(); // editor
+        glBlitNamedFramebuffer(displayFBO.getRenderID(), 0, 0, 0, data.windowSize.x, data.windowSize.y, 0, 0, data.windowSize.x, data.windowSize.y, GL_COLOR_BUFFER_BIT, GL_NEAREST);
 
         // ==========================
         
@@ -289,7 +284,11 @@ int main(int argc, char **argv)
         glfwPollEvents();
         ImGui::Render();
         ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
-        ImGui::UpdatePlatformWindows();
+
+        if(io.ConfigFlags & ImGuiConfigFlags_DockingEnable)
+        {
+            ImGui::UpdatePlatformWindows();
+        }
         glfwSwapBuffers(window);
         data.deltatime = std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::high_resolution_clock::now() - start).count() * 1.0E-6;
     }
@@ -444,12 +443,8 @@ bool init(GLFWwindow **window)
     glfwWindowHint(GLFW_SAMPLES, NUM_SAMPLES);
     glfwWindowHint(GLFW_SRGB_CAPABLE, GLFW_TRUE);
 
-    glfwWindowHint(GLFW_MOUSE_PASSTHROUGH, GLFW_TRUE);
-    glfwWindowHint(GLFW_TRANSPARENT_FRAMEBUFFER, GLFW_TRUE);
-    glfwWindowHint(GLFW_DECORATED, GLFW_FALSE);
-
     GLFWvidmode const *mode = glfwGetVideoMode(glfwGetPrimaryMonitor());
-    *window = glfwCreateWindow(mode->width, mode->height, "opengl", glfwGetPrimaryMonitor(), nullptr);
+    *window = glfwCreateWindow(mode->width * 0.5, mode->height * 0.5, "opengl", nullptr, nullptr);
     glfwSetWindowTitle(*window, "flow cubemap editor v1.0");
 
     if (!*window) {
@@ -616,18 +611,16 @@ glm::vec3 unProjectMouse(Data &data)
         glm::vec4{0, 0, data.windowSize.x, data.windowSize.y}
     );
 }
-template<typename vec_t = glm::vec2> vec_t toVec2(ImVec2 const &pos) { return vec_t{pos.x, pos.y}; }
 void processInput(Data &data)
 {
     assert(data.window);
 
-    ImGui::Begin(EDITOR_WINDOW_NAME.data());
-    bool cameraLocked = glfwGetMouseButton(data.window, GLFW_MOUSE_BUTTON_RIGHT) == GLFW_PRESS && ImGui::IsWindowFocused();
+    ImGui::Begin(CONFIG_WINDOW_NAME.data());
+    bool cameraLocked = glfwGetMouseButton(data.window, GLFW_MOUSE_BUTTON_RIGHT) == GLFW_PRESS && !ImGui::IsWindowFocused();
+    ImGui::End();
     glfwSetInputMode(data.window, GLFW_CURSOR, cameraLocked ? GLFW_CURSOR_CAPTURED : GLFW_CURSOR_NORMAL);
     
-    // glfwGetCursorPos(data.window, &data.mousePos.x, &data.mousePos.y);
-    data.mousePos = toVec2<glm::dvec2>(ImGui::GetIO().MousePos) - toVec2<glm::dvec2>(ImGui::GetWindowPos()) - toVec2<glm::dvec2>(ImGui::GetWindowContentRegionMin());
-    ImGui::End();
+    glfwGetCursorPos(data.window, &data.mousePos.x, &data.mousePos.y);
     glm::vec2 deltaMouse = data.mousePos - data.prevMousePos;
     data.prevMousePos = data.mousePos;
 
@@ -637,22 +630,22 @@ void processInput(Data &data)
         updateVP(data, cameraLocked);
     } else {
         updateVP(data, cameraLocked);
-        glm::vec3 point = unProjectMouse(data);
+        // glm::vec3 point = unProjectMouse(data);
 
-        glm::vec3 origin = data.cameraPos;
-        glm::vec3 dir = glm::normalize(point - origin);
+        // glm::vec3 origin = data.cameraPos;
+        // glm::vec3 dir = glm::normalize(point - origin);
 
-        glm::mat4 modelViewMat = data.viewMat;
+        // glm::mat4 modelViewMat = data.viewMat;
     }
 }
 void scroll_callback(GLFWwindow* window, double xoffset, double yoffset)
 {
     Data &data = *static_cast<Data *>(glfwGetWindowUserPointer(window));
-    ImGui::Begin(EDITOR_WINDOW_NAME.data());
+    ImGui::Begin(CONFIG_WINDOW_NAME.data());
     if(ImGui::IsWindowFocused()) {
-        data.distance.velocity -= yoffset * data.deltatime * data.sensitivity;
-    } else {
         ImGui_ImplGlfw_ScrollCallback(window, xoffset, yoffset);
+    } else {
+        data.distance.velocity -= yoffset * data.deltatime * data.sensitivity;
     }
     ImGui::End();
 }
