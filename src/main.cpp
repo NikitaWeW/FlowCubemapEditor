@@ -94,7 +94,7 @@ constexpr unsigned NUM_SAMPLES = 4;
 constexpr std::string_view CONFIG_WINDOW_NAME = "Dear ImGui Demo"; // placeholder
 constexpr float ZNEAR = 0.01;
 constexpr float ZFAR = 100;
-
+constexpr float CUBE_MODEL_SIZE = 1.0f; 
 
 void resizeColorAttachment(ogl::Framebuffer &fbo, ogl::Texture &texture, glm::ivec2 size, GLenum attachment = GL_COLOR_ATTACHMENT0);
 void resizeColorAttachment(ogl::Framebuffer &fbo, ogl::TextureMS &texture, glm::ivec2 size, GLenum attachment = GL_COLOR_ATTACHMENT0);
@@ -102,6 +102,11 @@ bool init(GLFWwindow **window);
 Mesh load(std::string_view path);
 void processInput(Data &data);
 void scroll_callback(GLFWwindow* window, double xoffset, double yoffset);
+
+glm::vec3 debug_point0{0};
+glm::vec3 debug_point1{0};
+glm::vec3 debug_point2{0};
+glm::vec3 debug_point3{0};
 
 int main(int argc, char **argv)
 {
@@ -190,9 +195,11 @@ int main(int argc, char **argv)
             displayFBO.attach(displayRBO, GL_DEPTH_STENCIL_ATTACHMENT);
             assert(displayFBO.isComplete());
         }
-
+        mainFBO.attach(mainRBO, GL_DEPTH_STENCIL_ATTACHMENT);
+        displayFBO.attach(displayTexture, GL_COLOR_ATTACHMENT0);
         processInput(data);
 
+        // ==========================
         // ==========================
 
         mainFBO.bind();
@@ -211,6 +218,7 @@ int main(int argc, char **argv)
 
         cubeShader.bind();
         
+        glUniformMatrix4fv(cubeShader.getUniform("u_modelMat"), 1, GL_FALSE, glm::value_ptr(glm::mat4{1.0f}));
         glUniformMatrix4fv(cubeShader.getUniform("u_viewMat"),        1, GL_FALSE, glm::value_ptr(data.viewMat));
         glUniformMatrix4fv(cubeShader.getUniform("u_projectionMat"),  1, GL_FALSE, glm::value_ptr(data.projMat));
         
@@ -251,6 +259,29 @@ int main(int argc, char **argv)
         // vertices hard-coded in the shader
         glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
 
+// ======================================================
+        
+        glDepthFunc(GL_LESS);
+        glDepthMask(GL_TRUE);
+        glEnable(GL_CULL_FACE);
+
+        cubeShader.bind();
+        
+        glUniformMatrix4fv(cubeShader.getUniform("u_viewMat"),        1, GL_FALSE, glm::value_ptr(data.viewMat));
+        glUniformMatrix4fv(cubeShader.getUniform("u_projectionMat"),  1, GL_FALSE, glm::value_ptr(data.projMat));
+        
+        cube.vao.bind();
+        
+        glUniformMatrix4fv(cubeShader.getUniform("u_modelMat"), 1, GL_FALSE, glm::value_ptr(glm::scale(glm::translate(glm::mat4{1.0f}, debug_point0), glm::vec3{0.05})));
+        glDrawArrays(GL_TRIANGLES, 0, cube.count);
+        glUniformMatrix4fv(cubeShader.getUniform("u_modelMat"), 1, GL_FALSE, glm::value_ptr(glm::scale(glm::translate(glm::mat4{1.0f}, debug_point1), glm::vec3{0.05})));
+        glDrawArrays(GL_TRIANGLES, 0, cube.count);
+        glUniformMatrix4fv(cubeShader.getUniform("u_modelMat"), 1, GL_FALSE, glm::value_ptr(glm::scale(glm::translate(glm::mat4{1.0f}, debug_point2), glm::vec3{0.05})));
+        glDrawArrays(GL_TRIANGLES, 0, cube.count);
+        glUniformMatrix4fv(cubeShader.getUniform("u_modelMat"), 1, GL_FALSE, glm::value_ptr(glm::scale(glm::translate(glm::mat4{1.0f}, debug_point3), glm::vec3{0.05})));
+        glDrawArrays(GL_TRIANGLES, 0, cube.count);
+// ======================================================
+
         // ============================================
         // draw to a display texture + post processing 
         // ============================================
@@ -275,10 +306,13 @@ int main(int argc, char **argv)
 
         glBlitNamedFramebuffer(displayFBO.getRenderID(), 0, 0, 0, data.windowSize.x, data.windowSize.y, 0, 0, data.windowSize.x, data.windowSize.y, GL_COLOR_BUFFER_BIT, GL_NEAREST);
 
-        // ==========================
+        // ============
+        // ImGui stuff 
+        // ============
         
         ImGui::ShowDemoWindow();
         
+        // ==========================
         // ==========================
         
         glfwPollEvents();
@@ -445,7 +479,7 @@ bool init(GLFWwindow **window)
 
     GLFWvidmode const *mode = glfwGetVideoMode(glfwGetPrimaryMonitor());
     *window = glfwCreateWindow(mode->width * 0.5, mode->height * 0.5, "opengl", nullptr, nullptr);
-    glfwSetWindowTitle(*window, "flow cubemap editor v1.0");
+    glfwSetWindowTitle(*window, "flow cubemap editor v0.0 (still broken)");
 
     if (!*window) {
         LOG_FATAL("failed to initialize window.");
@@ -611,6 +645,16 @@ glm::vec3 unProjectMouse(Data &data)
         glm::vec4{0, 0, data.windowSize.x, data.windowSize.y}
     );
 }
+// https://gist.github.com/DomNomNom/46bb1ce47f68d255fd5d
+glm::vec2 rayAABB(glm::vec3 rayOrigin, glm::vec3 rayDir, glm::vec3 boxMin, glm::vec3 boxMax) {
+    glm::vec3 tMin = (boxMin - rayOrigin) / rayDir;
+    glm::vec3 tMax = (boxMax - rayOrigin) / rayDir;
+    glm::vec3 t1 = glm::min(tMin, tMax);
+    glm::vec3 t2 = glm::max(tMin, tMax);
+    float tNear = glm::max(glm::max(t1.x, t1.y), t1.z);
+    float tFar = glm::min(glm::min(t2.x, t2.y), t2.z);
+    return glm::vec2(tNear, tFar);
+};
 void processInput(Data &data)
 {
     assert(data.window);
@@ -630,12 +674,31 @@ void processInput(Data &data)
         updateVP(data, cameraLocked);
     } else {
         updateVP(data, cameraLocked);
-        // glm::vec3 point = unProjectMouse(data);
+        glm::vec3 point = unProjectMouse(data);
 
-        // glm::vec3 origin = data.cameraPos;
-        // glm::vec3 dir = glm::normalize(point - origin);
+        glm::vec3 origin = data.cameraPos;
+        glm::vec3 dir = glm::normalize(point - origin);
+        debug_point0 = origin;
+        debug_point1 = origin + dir * 10.0f;
+        
+        // glm::mat4 invModelViewMat = glm::inverse(data.viewMat);
+        
+        // glm::vec3 newOrigin = invModelViewMat * glm::vec4{origin, 1};
+        // glm::vec3 newDir = invModelViewMat * glm::vec4{dir, 0};
+        
+        glm::vec2 intersection = rayAABB(origin, dir, glm::vec3{-CUBE_MODEL_SIZE * 0.5f}, glm::vec3{CUBE_MODEL_SIZE * 0.5f});
 
-        // glm::mat4 modelViewMat = data.viewMat;
+        if(intersection.x <= intersection.y)
+        {
+            LOG_DEBUG("yes intersection!");
+            
+            debug_point2 = origin + dir * intersection.x;
+            debug_point3 = origin + dir * intersection.y;
+        } else {
+            LOG_DEBUG("no intersection!");
+
+            debug_point2 = debug_point3 = glm::vec3{0};
+        }
     }
 }
 void scroll_callback(GLFWwindow* window, double xoffset, double yoffset)

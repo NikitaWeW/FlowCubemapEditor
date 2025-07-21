@@ -9,11 +9,12 @@ out VS_OUT {
     vec3 normal;
 } vs_out;
 
+uniform mat4 u_modelMat = mat4(1.0f);
 uniform mat4 u_projectionMat;
 uniform mat4 u_viewMat;
 
 void main() {
-    gl_Position = u_projectionMat * u_viewMat * a_position;
+    gl_Position = u_projectionMat * u_viewMat * u_modelMat * a_position;
     vs_out.texCoords = a_texCoord;
     vs_out.fragPos = vec3(a_position);
     
