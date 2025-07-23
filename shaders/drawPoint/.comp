@@ -1,0 +1,41 @@
+#version 440
+
+layout (local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
+layout(rgba16f, binding = 0) uniform imageCube u_output;
+uniform vec3 u_point;
+uniform vec3 u_prevPoint;
+uniform vec2 u_deltaMouse;
+uniform float u_brush_size = 0.1;
+
+// thanks to https://github.com/Nadrin/PBR/blob/master/data/shaders/glsl/equirect2cube_cs.glsl
+vec3 getSamplingPoint()
+{
+    vec2 st = gl_GlobalInvocationID.xy / vec2(imageSize(u_output));
+    vec2 uv = 2.0 * vec2(st.x, 1.0-st.y) - vec2(1.0);
+
+    vec3 ret = vec3(1);
+	// Select vector based on cubemap face index.
+    // Sadly 'switch' doesn't seem to work, at least on NVIDIA.
+         if(gl_GlobalInvocationID.z == 0) ret = vec3(  1.0, uv.y, -uv.x);
+    else if(gl_GlobalInvocationID.z == 1) ret = vec3( -1.0, uv.y, uv.x);
+    else if(gl_GlobalInvocationID.z == 2) ret = vec3( uv.x,  1.0,-uv.y);
+    else if(gl_GlobalInvocationID.z == 3) ret = vec3( uv.x, -1.0, uv.y);
+    else if(gl_GlobalInvocationID.z == 4) ret = vec3( uv.x, uv.y, 1.0);
+    else if(gl_GlobalInvocationID.z == 5) ret = vec3(-uv.x, uv.y, -1.0);
+    return ret;
+}
+
+void main() 
+{
+    ivec3 coords = ivec3(gl_GlobalInvocationID.xyz);
+    vec3 samplingPoint = getSamplingPoint();
+
+    vec3 AP = samplingPoint - u_point;
+    vec3 AB = u_prevPoint - u_point;
+    float tSeg = clamp(dot(AP, AB) / dot(AB, AB), 0.0, 1.0);
+    vec3 closest = u_point + AB * tSeg;
+    float d = length(samplingPoint - closest);
+
+    vec4 color = vec4(-u_deltaMouse, 0, 1);
+    imageStore(u_output, coords, mix(imageLoad(u_output, coords), color, float(d <= u_brush_size)));
+}

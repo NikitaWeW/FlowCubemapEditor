@@ -73,19 +73,39 @@ struct VelocityVariable
 struct Data
 {
     GLFWwindow *window = nullptr;
+
     glm::ivec2 windowSize{-1};
     glm::dvec2 mousePos{0};
+    glm::dvec2 prevMousePos{0};
+
     glm::mat4 viewMat{1.0f};
     glm::mat4 projMat{1.0f};
+
     glm::vec3 cameraPos{0};
     glm::vec3 cameraDir{1};
+
+    glm::vec3 intersectionPoint;
+    glm::vec3 prevIntersectionPoint{-1};
+
+    unsigned flowMapSize = -1;
+    std::array<ogl::Cubemap, 2> pinPongCurrentDrawFlowmaps;
+    ogl::Cubemap flowMap;
+    unsigned char currentPinPongCurrentDrawFlowmap = 0;
+
+    ogl::ShaderProgram flowMapDrawShader;
+    ogl::ShaderProgram blurFlowMapShader;
+    ogl::ShaderProgram combineShader;
+
     float deltatime = 0.1;
-    glm::dvec2 prevMousePos{0};
-    VelocityVariable<glm::vec2> yawPitch;
-    VelocityVariable<float> distance{
-        .value = 3
-    };
+
+    VelocityVariable<glm::vec2> yawPitch{.value = glm::vec2{0}};
+    VelocityVariable<float> distance{.value = 3};
     float sensitivity = 500;
+
+    struct {
+        bool showFlow = false;
+        bool hdrFlowmap = true;
+    } inputs;
 };
 
 int main(int argc, char **argv);
@@ -103,11 +123,6 @@ Mesh load(std::string_view path);
 void processInput(Data &data);
 void scroll_callback(GLFWwindow* window, double xoffset, double yoffset);
 
-glm::vec3 debug_point0{0};
-glm::vec3 debug_point1{0};
-glm::vec3 debug_point2{0};
-glm::vec3 debug_point3{0};
-
 int main(int argc, char **argv)
 {
     GLFWwindow *window = nullptr;
@@ -119,7 +134,9 @@ int main(int argc, char **argv)
 
     // ===================================
 
-    ogl::Cubemap skybox{"res/textures/kloppenheim_06_puresky_2k.hdr"};
+    ogl::Cubemap skybox{"res/textures/qwantani_dawn_puresky_4k.hdr"};
+    ogl::Texture flowTexture{"res/textures/water.jpg"};
+
     ogl::ShaderProgram cubeShader{"shaders/prop"};
     ogl::ShaderProgram displayShader{"shaders/hdrImage"};
     ogl::ShaderProgram skyboxShader{"shaders/skybox"};
@@ -135,18 +152,47 @@ int main(int argc, char **argv)
     ogl::Renderbuffer displayRBO{0};
     ogl::Texture displayTexture{GL_LINEAR, GL_LINEAR, GL_CLAMP_TO_EDGE};
 
-    ogl::Cubemap flowCubemap{0}; // dummy argument
-    flowCubemap = skybox;
-
     // ===================================
 
     Data data{};
     data.window = window;
     data.distance.falloff = 10;
-    glfwSetWindowUserPointer(data.window, &data);
-    glfwSetScrollCallback(data.window, scroll_callback);
+
+    data.flowMapSize = 1024;
+    for(unsigned i = 0; i < data.pinPongCurrentDrawFlowmaps.size(); ++i)
+        data.pinPongCurrentDrawFlowmaps[i] = ogl::Cubemap{0};
+    glTextureStorage2D(
+        data.pinPongCurrentDrawFlowmaps[0].getRenderID(),
+        1,
+        GL_RGBA16F,
+        data.flowMapSize,
+        data.flowMapSize
+    );
+    glTextureStorage2D(
+        data.pinPongCurrentDrawFlowmaps[1].getRenderID(),
+        1,
+        GL_RGBA16F,
+        data.flowMapSize,
+        data.flowMapSize
+    );
+
+    data.flowMap = ogl::Cubemap{0};
+    glTextureStorage2D(
+        data.flowMap.getRenderID(),
+        1,
+        GL_RGBA16F,
+        data.flowMapSize,
+        data.flowMapSize
+    );
+
+    data.flowMapDrawShader = ogl::ShaderProgram{"shaders/drawPoint"};
+    data.blurFlowMapShader = ogl::ShaderProgram{"shaders/blurCubemap"};
+    data.combineShader = ogl::ShaderProgram{"shaders/combine"};
 
     // ===================================
+    
+    glfwSetWindowUserPointer(data.window, &data);
+    glfwSetScrollCallback(data.window, scroll_callback);
 
     glEnable(GL_BLEND);
     glEnable(GL_DEPTH_TEST);
@@ -158,21 +204,22 @@ int main(int argc, char **argv)
 
     while (!glfwWindowShouldClose(window))
     {
+        auto start = std::chrono::high_resolution_clock::now();
+        glm::ivec2 prevDim = data.windowSize;
+        glfwGetFramebufferSize(window, &data.windowSize.x, &data.windowSize.y);
+
         ImGui_ImplOpenGL3_NewFrame();
         ImGui_ImplGlfw_NewFrame();
         ImGui::NewFrame();
         ImGuiIO &io = ImGui::GetIO();
 
+        glViewport(0, 0, data.windowSize.x, data.windowSize.y);
         if (io.ConfigFlags & ImGuiConfigFlags_DockingEnable)
         {
             ImGuiID dockspace_id = ImGui::GetID("Editor DockSpace");
             ImGui::DockSpaceOverViewport(dockspace_id, ImGui::GetMainViewport(), ImGuiDockNodeFlags_PassthruCentralNode);
         }
         
-        auto start = std::chrono::high_resolution_clock::now();
-        glm::ivec2 prevDim = data.windowSize;
-        glfwGetFramebufferSize(window, &data.windowSize.x, &data.windowSize.y);
-
         if(data.windowSize != prevDim)
         { // resize drawbuffers
             resizeColorAttachment(mainFBO, mainColor, data.windowSize);
@@ -195,35 +242,15 @@ int main(int argc, char **argv)
             displayFBO.attach(displayRBO, GL_DEPTH_STENCIL_ATTACHMENT);
             assert(displayFBO.isComplete());
         }
-        mainFBO.attach(mainRBO, GL_DEPTH_STENCIL_ATTACHMENT);
-        displayFBO.attach(displayTexture, GL_COLOR_ATTACHMENT0);
         processInput(data);
 
-        // ==========================
+        // __________________________
         // ==========================
 
         mainFBO.bind();
 
-        glViewport(0, 0, data.windowSize.x, data.windowSize.y);
         glDepthMask(GL_TRUE);
         glClear(GL_DEPTH_BUFFER_BIT);
-
-        // ============
-        // draw a cube 
-        // ============
-
-        glDepthFunc(GL_LESS);
-        glDepthMask(GL_TRUE);
-        glEnable(GL_CULL_FACE);
-
-        cubeShader.bind();
-        
-        glUniformMatrix4fv(cubeShader.getUniform("u_modelMat"), 1, GL_FALSE, glm::value_ptr(glm::mat4{1.0f}));
-        glUniformMatrix4fv(cubeShader.getUniform("u_viewMat"),        1, GL_FALSE, glm::value_ptr(data.viewMat));
-        glUniformMatrix4fv(cubeShader.getUniform("u_projectionMat"),  1, GL_FALSE, glm::value_ptr(data.projMat));
-        
-        cube.vao.bind();
-        glDrawArrays(GL_TRIANGLES, 0, cube.count);
 
         // ==============
         // draw a skybox 
@@ -259,28 +286,27 @@ int main(int argc, char **argv)
         // vertices hard-coded in the shader
         glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
 
-// ======================================================
-        
+        // ============
+        // draw a cube 
+        // ============
+
         glDepthFunc(GL_LESS);
         glDepthMask(GL_TRUE);
         glEnable(GL_CULL_FACE);
 
         cubeShader.bind();
+        data.pinPongCurrentDrawFlowmaps[data.currentPinPongCurrentDrawFlowmap].bind(0);
+        flowTexture.bind(1);
         
+        glUniform1i(       cubeShader.getUniform("u_showFlow"),       data.inputs.showFlow);
+        glUniform1i(       cubeShader.getUniform("u_hdrFlowMap"),     data.inputs.hdrFlowmap);
+        glUniform1f(       cubeShader.getUniform("u_time"),           glfwGetTime());
+        glUniformMatrix4fv(cubeShader.getUniform("u_modelMat"),       1, GL_FALSE, glm::value_ptr(glm::mat4{1.0f}));
         glUniformMatrix4fv(cubeShader.getUniform("u_viewMat"),        1, GL_FALSE, glm::value_ptr(data.viewMat));
         glUniformMatrix4fv(cubeShader.getUniform("u_projectionMat"),  1, GL_FALSE, glm::value_ptr(data.projMat));
         
         cube.vao.bind();
-        
-        glUniformMatrix4fv(cubeShader.getUniform("u_modelMat"), 1, GL_FALSE, glm::value_ptr(glm::scale(glm::translate(glm::mat4{1.0f}, debug_point0), glm::vec3{0.05})));
         glDrawArrays(GL_TRIANGLES, 0, cube.count);
-        glUniformMatrix4fv(cubeShader.getUniform("u_modelMat"), 1, GL_FALSE, glm::value_ptr(glm::scale(glm::translate(glm::mat4{1.0f}, debug_point1), glm::vec3{0.05})));
-        glDrawArrays(GL_TRIANGLES, 0, cube.count);
-        glUniformMatrix4fv(cubeShader.getUniform("u_modelMat"), 1, GL_FALSE, glm::value_ptr(glm::scale(glm::translate(glm::mat4{1.0f}, debug_point2), glm::vec3{0.05})));
-        glDrawArrays(GL_TRIANGLES, 0, cube.count);
-        glUniformMatrix4fv(cubeShader.getUniform("u_modelMat"), 1, GL_FALSE, glm::value_ptr(glm::scale(glm::translate(glm::mat4{1.0f}, debug_point3), glm::vec3{0.05})));
-        glDrawArrays(GL_TRIANGLES, 0, cube.count);
-// ======================================================
 
         // ============================================
         // draw to a display texture + post processing 
@@ -312,14 +338,14 @@ int main(int argc, char **argv)
         
         ImGui::ShowDemoWindow();
         
-        // ==========================
-        // ==========================
+        // __________________________.
+        // ==========================|
         
         glfwPollEvents();
         ImGui::Render();
         ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
 
-        if(io.ConfigFlags & ImGuiConfigFlags_DockingEnable)
+        if(io.ConfigFlags & ImGuiConfigFlags_ViewportsEnable)
         {
             ImGui::UpdatePlatformWindows();
         }
@@ -610,7 +636,7 @@ Mesh load(std::string_view path)
 void updateVP(Data &data, bool cameraLocked)
 {
     data.yawPitch.update(data.deltatime);
-    data.yawPitch.falloff = glm::mix(glm::vec2{1.0f}, glm::vec2{5.0f}, static_cast<float>(!cameraLocked));
+    data.yawPitch.falloff = glm::mix(glm::vec2{10.0f}, glm::vec2{5.0f}, static_cast<float>(!cameraLocked));
     data.distance.update(data.deltatime);
     data.distance.value = glm::clamp<float>(data.distance.value, 1, 5);
 
@@ -665,40 +691,57 @@ void processInput(Data &data)
     glfwSetInputMode(data.window, GLFW_CURSOR, cameraLocked ? GLFW_CURSOR_CAPTURED : GLFW_CURSOR_NORMAL);
     
     glfwGetCursorPos(data.window, &data.mousePos.x, &data.mousePos.y);
-    glm::vec2 deltaMouse = data.mousePos - data.prevMousePos;
+    glm::vec2 deltaMouse = data.prevMousePos - data.mousePos;
+    deltaMouse.x = -deltaMouse.x;
     data.prevMousePos = data.mousePos;
 
     if(cameraLocked) 
     {
-        data.yawPitch.velocity += deltaMouse * data.deltatime * data.sensitivity;
-        updateVP(data, cameraLocked);
-    } else {
-        updateVP(data, cameraLocked);
+        data.yawPitch.velocity += glm::vec2{deltaMouse.x, -deltaMouse.y} * data.deltatime * data.sensitivity;
+    }
+
+    updateVP(data, cameraLocked);
+    
+    if(glfwGetMouseButton(data.window, GLFW_MOUSE_BUTTON_LEFT) && !cameraLocked && (deltaMouse != glm::vec2{0}))
+    {
         glm::vec3 point = unProjectMouse(data);
 
         glm::vec3 origin = data.cameraPos;
         glm::vec3 dir = glm::normalize(point - origin);
-        debug_point0 = origin;
-        debug_point1 = origin + dir * 10.0f;
-        
-        // glm::mat4 invModelViewMat = glm::inverse(data.viewMat);
-        
-        // glm::vec3 newOrigin = invModelViewMat * glm::vec4{origin, 1};
-        // glm::vec3 newDir = invModelViewMat * glm::vec4{dir, 0};
         
         glm::vec2 intersection = rayAABB(origin, dir, glm::vec3{-CUBE_MODEL_SIZE * 0.5f}, glm::vec3{CUBE_MODEL_SIZE * 0.5f});
 
         if(intersection.x <= intersection.y)
         {
-            LOG_DEBUG("yes intersection!");
-            
-            debug_point2 = origin + dir * intersection.x;
-            debug_point3 = origin + dir * intersection.y;
-        } else {
-            LOG_DEBUG("no intersection!");
+            data.intersectionPoint = origin + dir * intersection.x;
+            data.intersectionPoint /= CUBE_MODEL_SIZE * 0.5f;
+            glm::vec3 prevPoint = data.prevIntersectionPoint == glm::vec3{0} ? data.intersectionPoint : data.prevIntersectionPoint;
 
-            debug_point2 = debug_point3 = glm::vec3{0};
+            data.flowMapDrawShader.bind();
+            glBindImageTexture(0, data.pinPongCurrentDrawFlowmaps[data.currentPinPongCurrentDrawFlowmap].getRenderID(), 0, GL_TRUE, 0, GL_READ_WRITE, GL_RGBA16F);
+            glUniform3fv(data.flowMapDrawShader.getUniform("u_point"),      1, glm::value_ptr(data.intersectionPoint));
+            glUniform3fv(data.flowMapDrawShader.getUniform("u_prevPoint"),  1, glm::value_ptr(prevPoint));
+            glUniform2fv(data.flowMapDrawShader.getUniform("u_deltaMouse"), 1, glm::value_ptr(deltaMouse / glm::vec2{10.0f})); // FIXME: insert something reasonable here
+            glDispatchCompute((data.flowMapSize + 15) / 16, (data.flowMapSize + 7) / 8, 6);
+            glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT);
+
+            data.prevIntersectionPoint = data.intersectionPoint;
+
+            for(unsigned i = 0; i < 4; ++i)
+            {
+                data.blurFlowMapShader.bind();
+                glBindImageTexture(0, data.pinPongCurrentDrawFlowmaps[data.currentPinPongCurrentDrawFlowmap].getRenderID(),  0, GL_TRUE, 0, GL_READ_ONLY,  GL_RGBA16F);
+                glBindImageTexture(1, data.pinPongCurrentDrawFlowmaps[!data.currentPinPongCurrentDrawFlowmap].getRenderID(), 0, GL_TRUE, 0, GL_WRITE_ONLY, GL_RGBA16F);
+                glDispatchCompute((data.flowMapSize + 15) / 16, (data.flowMapSize + 7) / 8, 6);
+                glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT);
+
+                data.currentPinPongCurrentDrawFlowmap = !data.currentPinPongCurrentDrawFlowmap;
+            }
         }
+    }
+    else 
+    {
+        data.prevIntersectionPoint = glm::vec3{0};
     }
 }
 void scroll_callback(GLFWwindow* window, double xoffset, double yoffset)
