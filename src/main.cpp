@@ -88,13 +88,9 @@ struct Data
     glm::vec3 prevIntersectionPoint{-1};
 
     unsigned flowMapSize = -1;
-    std::array<ogl::Cubemap, 2> pinPongCurrentDrawFlowmaps;
     ogl::Cubemap flowMap;
-    unsigned char currentPinPongCurrentDrawFlowmap = 0;
 
     ogl::ShaderProgram flowMapDrawShader;
-    ogl::ShaderProgram blurFlowMapShader;
-    ogl::ShaderProgram combineShader;
 
     float deltatime = 0.1;
 
@@ -159,22 +155,6 @@ int main(int argc, char **argv)
     data.distance.falloff = 10;
 
     data.flowMapSize = 1024;
-    for(unsigned i = 0; i < data.pinPongCurrentDrawFlowmaps.size(); ++i)
-        data.pinPongCurrentDrawFlowmaps[i] = ogl::Cubemap{0};
-    glTextureStorage2D(
-        data.pinPongCurrentDrawFlowmaps[0].getRenderID(),
-        1,
-        GL_RGBA16F,
-        data.flowMapSize,
-        data.flowMapSize
-    );
-    glTextureStorage2D(
-        data.pinPongCurrentDrawFlowmaps[1].getRenderID(),
-        1,
-        GL_RGBA16F,
-        data.flowMapSize,
-        data.flowMapSize
-    );
 
     data.flowMap = ogl::Cubemap{0};
     glTextureStorage2D(
@@ -186,8 +166,6 @@ int main(int argc, char **argv)
     );
 
     data.flowMapDrawShader = ogl::ShaderProgram{"shaders/drawPoint"};
-    data.blurFlowMapShader = ogl::ShaderProgram{"shaders/blurCubemap"};
-    data.combineShader = ogl::ShaderProgram{"shaders/combine"};
 
     // ===================================
     
@@ -295,7 +273,7 @@ int main(int argc, char **argv)
         glEnable(GL_CULL_FACE);
 
         cubeShader.bind();
-        data.pinPongCurrentDrawFlowmaps[data.currentPinPongCurrentDrawFlowmap].bind(0);
+        data.flowMap.bind(0);
         flowTexture.bind(1);
         
         glUniform1i(       cubeShader.getUniform("u_showFlow"),       data.inputs.showFlow);
@@ -718,7 +696,7 @@ void processInput(Data &data)
             glm::vec3 prevPoint = data.prevIntersectionPoint == glm::vec3{0} ? data.intersectionPoint : data.prevIntersectionPoint;
 
             data.flowMapDrawShader.bind();
-            glBindImageTexture(0, data.pinPongCurrentDrawFlowmaps[data.currentPinPongCurrentDrawFlowmap].getRenderID(), 0, GL_TRUE, 0, GL_READ_WRITE, GL_RGBA16F);
+            glBindImageTexture(0, data.flowMap.getRenderID(), 0, GL_TRUE, 0, GL_READ_WRITE, GL_RGBA16F);
             glUniform3fv(data.flowMapDrawShader.getUniform("u_point"),      1, glm::value_ptr(data.intersectionPoint));
             glUniform3fv(data.flowMapDrawShader.getUniform("u_prevPoint"),  1, glm::value_ptr(prevPoint));
             glUniform2fv(data.flowMapDrawShader.getUniform("u_deltaMouse"), 1, glm::value_ptr(deltaMouse / glm::vec2{10.0f})); // FIXME: insert something reasonable here
@@ -726,17 +704,6 @@ void processInput(Data &data)
             glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT);
 
             data.prevIntersectionPoint = data.intersectionPoint;
-
-            for(unsigned i = 0; i < 4; ++i)
-            {
-                data.blurFlowMapShader.bind();
-                glBindImageTexture(0, data.pinPongCurrentDrawFlowmaps[data.currentPinPongCurrentDrawFlowmap].getRenderID(),  0, GL_TRUE, 0, GL_READ_ONLY,  GL_RGBA16F);
-                glBindImageTexture(1, data.pinPongCurrentDrawFlowmaps[!data.currentPinPongCurrentDrawFlowmap].getRenderID(), 0, GL_TRUE, 0, GL_WRITE_ONLY, GL_RGBA16F);
-                glDispatchCompute((data.flowMapSize + 15) / 16, (data.flowMapSize + 7) / 8, 6);
-                glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT);
-
-                data.currentPinPongCurrentDrawFlowmap = !data.currentPinPongCurrentDrawFlowmap;
-            }
         }
     }
     else 

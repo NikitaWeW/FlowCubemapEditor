@@ -15,29 +15,50 @@ uniform float u_time;
 
 const float flowIntencity = 0.05;
 
+const vec3 gridSamplingDisk[20] = vec3[]
+(
+   vec3(1, 1,  1), vec3( 1, -1,  1), vec3(-1, -1,  1), vec3(-1, 1,  1), 
+   vec3(1, 1, -1), vec3( 1, -1, -1), vec3(-1, -1, -1), vec3(-1, 1, -1),
+   vec3(1, 1,  0), vec3( 1, -1,  0), vec3(-1, -1,  0), vec3(-1, 1,  0),
+   vec3(1, 0,  1), vec3(-1,  0,  1), vec3( 1,  0, -1), vec3(-1, 0, -1),
+   vec3(0, 1,  1), vec3( 0, -1,  1), vec3( 0, -1, -1), vec3( 0, 1, -1)
+);
+vec4 textureBlurred(samplerCube cube, vec3 dir, float diskRadius)
+{
+    dir = normalize(dir);
+    vec4 res = vec4(0);
+    for(int i = 0; i < gridSamplingDisk.length(); ++i)
+    {
+        res += texture(cube, dir + normalize(gridSamplingDisk[i]) * diskRadius);
+    }
+    res /= float(gridSamplingDisk.length());
+
+    return res;
+}
+
 void main() 
 {
-    vec2 flow = texture(u_flowMap, fs_in.fragPos).rg;
+    vec2 flow = textureBlurred(u_flowMap, fs_in.fragPos, 0.05).rg;
     if(!u_hdrFlowMap)
     {
         flow = flow * 2 - 1;
     }
 
-    // if(u_showFlow)
-    // {
+    if(u_showFlow)
+    {
         o_color.rgb = vec3(flow, 0);
-    // }
-    // else
-    // {
-    //     float p1 = fract(u_time);
-    //     float p2 = fract(p1 + 0.5);
-    //     float flow_mix = abs((p1 - 0.5) * 2.0);
+    }
+    else
+    {
+        float p1 = fract(u_time);
+        float p2 = fract(p1 + 0.5);
+        float flow_mix = abs((p1 - 0.5) * 2.0);
 
-    //     vec3 main_tex1 = texture(u_texture, fs_in.texCoords + (flow * p1 * flowIntencity)).rgb;
-    //     vec3 main_tex2 = texture(u_texture, fs_in.texCoords + (flow * p2 * flowIntencity)).rgb;
-    //     vec3 main_tex_mix = mix(main_tex1, main_tex2, flow_mix);
-    //     o_color.rgb = main_tex_mix;
-    // }
+        vec3 main_tex1 = texture(u_texture, fs_in.texCoords + (flow * p1 * flowIntencity)).rgb;
+        vec3 main_tex2 = texture(u_texture, fs_in.texCoords + (flow * p2 * flowIntencity)).rgb;
+        vec3 main_tex_mix = mix(main_tex1, main_tex2, flow_mix);
+        o_color.rgb = main_tex_mix;
+    }
 
     o_color.a = 1;
 }
