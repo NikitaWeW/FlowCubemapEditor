@@ -6,8 +6,12 @@ uniform vec3 u_point;
 uniform vec3 u_prevPoint;
 uniform vec2 u_deltaMouse;
 uniform float u_brush_size = 0.1;
+uniform float u_strength = 1;
+uniform bool u_erase = false;
 uniform mat2 u_horizontalRotation;
-uniform mat2 u_verticalRotation;
+uniform bool u_hdrFlowMap;
+
+const float flowIntencity = 10.0f;
 
 // thanks to https://github.com/Nadrin/PBR/blob/master/data/shaders/glsl/equirect2cube_cs.glsl
 vec3 getSamplingPoint()
@@ -45,6 +49,10 @@ void main()
     vec3 closest = u_point + AB * tSeg;
     float d = length(samplingPoint - closest);
 
-    vec4 brushColor = vec4(getRotation() * -u_deltaMouse, 0, 1);
+    vec4 brushColor = vec4(getRotation() * -u_deltaMouse * u_strength, 0, 1);
+    if(!u_hdrFlowMap)
+        brushColor = clamp(brushColor / flowIntencity * 0.5 + 0.5, 0, 1);
+    if(u_erase)
+        brushColor = u_hdrFlowMap ? vec4(0) : vec4(0.5, 0.5, 0, 0);
     imageStore(u_output, coords, mix(imageLoad(u_output, coords), brushColor, float(d <= u_brush_size)));
 }

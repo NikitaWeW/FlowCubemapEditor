@@ -105,21 +105,24 @@ struct Data
     ogl::Cubemap flowMap;
 
     ogl::ShaderProgram flowMapDrawShader;
+    ogl::ShaderProgram flowMapClearShader;
 
     float deltatime = 0.1;
 
     VelocityVariable<glm::vec2> yawPitch{.value = glm::vec2{0}};
     VelocityVariable<float> distance{.value = 3};
-    float sensitivity = 1;
 
     struct {
-        bool showFlow = false;
+        bool eraseMode;
+        float sensitivity = 1;
+        float brushSize = 0.1;
+        int showFlow = false;
         bool hdrFlowmap = true;
     } inputs;
 };
 
 constexpr unsigned NUM_SAMPLES = 4;
-constexpr std::string_view CONFIG_WINDOW_NAME = "Dear ImGui Demo"; // placeholder
+constexpr std::string_view CONFIG_WINDOW_NAME = "Properties";
 constexpr float ZNEAR = 0.01;
 constexpr float ZFAR = 100;
 constexpr float CUBE_MODEL_SIZE = 1.0f; 
@@ -130,6 +133,8 @@ bool init(GLFWwindow **window);
 Mesh load(std::string_view path);
 void processInput(Data &data);
 void scroll_callback(GLFWwindow* window, double xoffset, double yoffset);
+void helpMarker(const char* desc);
+void clearFlowMap(Data &data);
 
 int main(int argc, char **argv)
 {
@@ -178,6 +183,7 @@ int main(int argc, char **argv)
     );
 
     data.flowMapDrawShader = ogl::ShaderProgram{"shaders/stroke"};
+    data.flowMapClearShader = ogl::ShaderProgram{"shaders/clear"};
 
     // ===================================
     
@@ -327,10 +333,52 @@ int main(int argc, char **argv)
         // ImGui stuff 
         // ============
         
+        ImGui::Begin(CONFIG_WINDOW_NAME.data());
+
+        ImGui::DragFloat("Sensitivity", &data.inputs.sensitivity, 0.01, 0.01, 100);
+        ImGui::SliderFloat("Brush Size", &data.inputs.brushSize, 0.01, 0.5w);
+
+        enum { Mode_Paint, Mode_Erase, ModeCount };
+        static int elem = Mode_Paint;
+        const char* elems_names[ModeCount] = { "Paint", "Erase" };
+        const char* elem_name = (elem >= 0 && elem < ModeCount) ? elems_names[elem] : "Unknown";
+        ImGui::SliderInt("Mode", &elem, 0, ModeCount - 1, elem_name); 
+        data.inputs.eraseMode = elem == Mode_Erase;
+
+        ImGui::RadioButton("Flow", &data.inputs.showFlow, 1); ImGui::SameLine();
+        ImGui::RadioButton("Water", &data.inputs.showFlow, 0);
+
+        if(ImGui::Checkbox("HDR flowmap", &data.inputs.hdrFlowmap))
+            ImGui::OpenPopup("Clear?");
+        helpMarker("Flow direction vectors won't be clamped to the range of [0; 1], which allows more dynamic flows.\nThe cube needs to be cleared after changing this option.");
+
+        if(ImGui::Button("Clear"))
+            ImGui::OpenPopup("Clear?");
+
+        if(ImGui::BeginPopupModal("Clear?", NULL, ImGuiWindowFlags_AlwaysAutoResize))
+        {
+            ImGui::Text("Your current drawing will be cleared.\nThis operation cannot be undone!");
+            ImGui::Separator();
+
+            static bool dont_ask_me_next_time = false;
+
+            ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(0, 0));
+            ImGui::Checkbox("Don't ask me next time", &dont_ask_me_next_time);
+            ImGui::PopStyleVar();
+
+            if (ImGui::Button("OK", ImVec2(120, 0)) || dont_ask_me_next_time) { 
+                clearFlowMap(data);
+                ImGui::CloseCurrentPopup(); 
+            }
+            ImGui::SetItemDefaultFocus();
+            ImGui::SameLine();
+            if (ImGui::Button("Cancel", ImVec2(120, 0))) { ImGui::CloseCurrentPopup(); }
+            ImGui::EndPopup();
+        }
+
+        ImGui::End();
+
         ImGui::ShowDemoWindow();
-        
-        // __________________________.
-        // ==========================|
         
         glfwPollEvents();
         ImGui::Render();
@@ -740,6 +788,9 @@ void drawStroke(Data &data)
     glBindImageTexture(0, data.flowMap.getRenderID(), 0, GL_TRUE, 0, GL_READ_WRITE, GL_RGBA16F);
     glUniform3fv(data.flowMapDrawShader.getUniform("u_point"),      1, glm::value_ptr(data.intersectionPoint));
     glUniform3fv(data.flowMapDrawShader.getUniform("u_prevPoint"),  1, glm::value_ptr(prevPoint));
+    glUniform1f (data.flowMapDrawShader.getUniform("u_brush_size"), data.inputs.brushSize);
+    glUniform1i (data.flowMapDrawShader.getUniform("u_erase"),      data.inputs.eraseMode);
+    glUniform1i (data.flowMapDrawShader.getUniform("u_hdrFlowMap"), data.inputs.hdrFlowmap);
     glUniform2fv(data.flowMapDrawShader.getUniform("u_deltaMouse"), 1, glm::value_ptr(data.deltaMouse / glm::vec2{10.0f})); // FIXME: insert something reasonable here
     glUniformMatrix2fv(data.flowMapDrawShader.getUniform("u_horizontalRotation"), 1, GL_FALSE, glm::value_ptr(data.horizontalRotation));
     glDispatchCompute((data.flowMapSize + 15) / 16, (data.flowMapSize + 7) / 8, 6);
@@ -752,10 +803,9 @@ void processInput(Data &data)
     assert(data.window);
 
     ImGui::Begin(CONFIG_WINDOW_NAME.data());
-    bool cameraLocked = glfwGetMouseButton(data.window, GLFW_MOUSE_BUTTON_RIGHT) == GLFW_PRESS && !ImGui::IsWindowFocused();
-    ImGui::End();
+    bool cameraLocked = glfwGetMouseButton(data.window, GLFW_MOUSE_BUTTON_RIGHT) == GLFW_PRESS;
     glfwSetInputMode(data.window, GLFW_CURSOR, cameraLocked ? GLFW_CURSOR_CAPTURED : GLFW_CURSOR_NORMAL);
-
+    
     
     glfwGetCursorPos(data.window, &data.mousePos.x, &data.mousePos.y);
     data.deltaMouse = data.prevMousePos - data.mousePos;
@@ -763,14 +813,14 @@ void processInput(Data &data)
     data.deltaMouse /= glm::max<float>(data.windowSize.x, data.windowSize.y) / 1000.0f;
     data.prevMousePos = data.mousePos;
 
-    if(cameraLocked) 
+    if(cameraLocked && !ImGui::IsWindowFocused()) 
     {
-        data.yawPitch.velocity += glm::vec2{data.deltaMouse.x, -data.deltaMouse.y} * data.deltatime * data.sensitivity * 500.0f;
+        data.yawPitch.velocity += glm::vec2{data.deltaMouse.x, -data.deltaMouse.y} * data.deltatime * data.inputs.sensitivity * 500.0f;
     }
 
     updateVP(data, cameraLocked);
     
-    if(glfwGetMouseButton(data.window, GLFW_MOUSE_BUTTON_LEFT) && !cameraLocked && (data.deltaMouse != glm::vec2{0}))
+    if(glfwGetMouseButton(data.window, GLFW_MOUSE_BUTTON_LEFT) && !cameraLocked && (data.deltaMouse != glm::vec2{0}) && !ImGui::IsWindowFocused())
     {
         if(glm::abs(data.yawPitch.value.y) > 90.0f) data.deltaMouse = -data.deltaMouse;
         drawStroke(data);
@@ -779,6 +829,7 @@ void processInput(Data &data)
     {
         data.prevIntersectionPoint = glm::vec3{0};
     }
+    ImGui::End();
 }
 void scroll_callback(GLFWwindow* window, double xoffset, double yoffset)
 {
@@ -787,7 +838,27 @@ void scroll_callback(GLFWwindow* window, double xoffset, double yoffset)
     if(ImGui::IsWindowFocused()) {
         ImGui_ImplGlfw_ScrollCallback(window, xoffset, yoffset);
     } else {
-        data.distance.velocity -= yoffset * data.deltatime * data.sensitivity * 500.0f;
+        data.distance.velocity -= yoffset * data.deltatime * data.inputs.sensitivity * 500.0f;
     }
     ImGui::End();
+}
+void helpMarker(const char* desc)
+{
+    ImGui::SameLine();
+    ImGui::TextDisabled("(?)");
+    if (ImGui::BeginItemTooltip())
+    {
+        ImGui::PushTextWrapPos(ImGui::GetFontSize() * 35.0f);
+        ImGui::TextUnformatted(desc);
+        ImGui::PopTextWrapPos();
+        ImGui::EndTooltip();
+    }
+}
+void clearFlowMap(Data &data)
+{
+    data.flowMapClearShader.bind();
+    glBindImageTexture(0, data.flowMap.getRenderID(), 0, GL_TRUE, 0, GL_WRITE_ONLY, GL_RGBA16F);
+    glUniform1i(data.flowMapClearShader.getUniform("u_hdrFlowMap"), data.inputs.hdrFlowmap);
+    glDispatchCompute((data.flowMapSize + 15) / 16, (data.flowMapSize + 7) / 8, 6);
+    glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT);
 }

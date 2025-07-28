@@ -38,9 +38,12 @@ vec4 textureBlurred(samplerCube cube, vec3 dir, float diskRadius)
 void main() 
 {
     vec2 flow = textureBlurred(u_flowMap, fs_in.fragPos, 0.05).rg;
-    // vec2 flow = texture(u_flowMap, fs_in.fragPos).rg;
+
     if(!u_hdrFlowMap) 
+    {
         flow = flow * 2 - 1;
+        flow *= 10; // too slow
+    }
     flow *= flowIntencity;
 
     if(u_showFlow)
@@ -58,7 +61,6 @@ void main()
         vec3 main_tex_mix = mix(main_tex1, main_tex2, flow_mix);
         o_color.rgb = main_tex_mix;
     }
-    // o_color.rgb = vec3(fs_in.texCoords, 0);
 
     o_color.a = 1;
 }
