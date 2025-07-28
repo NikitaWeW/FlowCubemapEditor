@@ -140,9 +140,9 @@ int ogl::ShaderProgram::getUniform(std::string const &name) const noexcept
     if(m_uniformLocationCache.find(name) != m_uniformLocationCache.end()) return m_uniformLocationCache[name];
     int location = glGetUniformLocation(m_renderID, name.c_str());
     m_uniformLocationCache[name] = location;
-    // if(location == -1) {
-    //     std::cout << "uniform \"" << name << "\" in shaders \"" << getPath() << "\" is not used or does not exist.\n";
-    // }
+    if(location == -1) {
+        std::cout << "uniform \"" << name << "\" in shaders \"" << getPath() << "\" is not used or does not exist.\n";
+    }
     return location;
 }
 

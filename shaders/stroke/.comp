@@ -6,6 +6,8 @@ uniform vec3 u_point;
 uniform vec3 u_prevPoint;
 uniform vec2 u_deltaMouse;
 uniform float u_brush_size = 0.1;
+uniform mat2 u_horizontalRotation;
+uniform mat2 u_verticalRotation;
 
 // thanks to https://github.com/Nadrin/PBR/blob/master/data/shaders/glsl/equirect2cube_cs.glsl
 vec3 getSamplingPoint()
@@ -25,6 +27,13 @@ vec3 getSamplingPoint()
     return ret;
 }
 
+mat2 getRotation()
+{
+         if(gl_GlobalInvocationID.z == 2) return u_horizontalRotation;
+    else if(gl_GlobalInvocationID.z == 3) return transpose(u_horizontalRotation);
+    else                                  return mat2(1.0f);  
+}
+
 void main() 
 {
     ivec3 coords = ivec3(gl_GlobalInvocationID.xyz);
@@ -36,6 +45,6 @@ void main()
     vec3 closest = u_point + AB * tSeg;
     float d = length(samplingPoint - closest);
 
-    vec4 color = vec4(-u_deltaMouse, 0, 1);
-    imageStore(u_output, coords, mix(imageLoad(u_output, coords), color, float(d <= u_brush_size)));
+    vec4 brushColor = vec4(getRotation() * -u_deltaMouse, 0, 1);
+    imageStore(u_output, coords, mix(imageLoad(u_output, coords), brushColor, float(d <= u_brush_size)));
 }

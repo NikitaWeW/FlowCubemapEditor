@@ -17,12 +17,23 @@
         +___________+
 
 2-Dimensional ASCII Representation Of A 3-Dimensional Cross-Section Of A 4-Dimensional Cube
+
+---
+
+Copyright (c) 2025 Nikita Martynau (https://opensource.org/license/mit)
+
+Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation files (the "Software"), to deal in the Software without restriction, including without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons to whom the Software is furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 */
 
 #include "glad/gl.h"
 #include "GLFW/glfw3.h"
 #include "GLFW/glfw3native.h"
 
+#define GLM_ENABLE_EXPERIMENTAL
 #include "glm/glm.hpp"
 #include "glm/gtc/matrix_transform.hpp"
 #include "glm/gtc/type_ptr.hpp"
@@ -70,6 +81,7 @@ struct VelocityVariable
         velocity -= velocity * curve * deltatime * falloff;
     }
 };
+// for a small application like this i think its fine to use a single struct as an app state
 struct Data
 {
     GLFWwindow *window = nullptr;
@@ -77,9 +89,11 @@ struct Data
     glm::ivec2 windowSize{-1};
     glm::dvec2 mousePos{0};
     glm::dvec2 prevMousePos{0};
+    glm::vec2  deltaMouse{0};
 
     glm::mat4 viewMat{1.0f};
     glm::mat4 projMat{1.0f};
+    glm::mat2 horizontalRotation;
 
     glm::vec3 cameraPos{0};
     glm::vec3 cameraDir{1};
@@ -96,15 +110,13 @@ struct Data
 
     VelocityVariable<glm::vec2> yawPitch{.value = glm::vec2{0}};
     VelocityVariable<float> distance{.value = 3};
-    float sensitivity = 500;
+    float sensitivity = 1;
 
     struct {
         bool showFlow = false;
         bool hdrFlowmap = true;
     } inputs;
 };
-
-int main(int argc, char **argv);
 
 constexpr unsigned NUM_SAMPLES = 4;
 constexpr std::string_view CONFIG_WINDOW_NAME = "Dear ImGui Demo"; // placeholder
@@ -165,7 +177,7 @@ int main(int argc, char **argv)
         data.flowMapSize
     );
 
-    data.flowMapDrawShader = ogl::ShaderProgram{"shaders/drawPoint"};
+    data.flowMapDrawShader = ogl::ShaderProgram{"shaders/stroke"};
 
     // ===================================
     
@@ -254,6 +266,7 @@ int main(int argc, char **argv)
         glDepthFunc(GL_LESS);
         glDepthMask(GL_FALSE);
         glDisable(GL_CULL_FACE);
+        glEnable(GL_BLEND);
 
         gridShader.bind();
 
@@ -543,6 +556,7 @@ Mesh load(std::string_view path)
     std::vector<glm::vec3> positions{};
     std::vector<glm::vec3> normals  {};
     std::vector<glm::vec2> texcoords{};
+    std::vector<glm::vec3> tangents {};
 
     Mesh mesh{};
     mesh.count = 0;
@@ -579,10 +593,35 @@ Mesh load(std::string_view path)
         }
     }
 
+    assert(positions.size() == normals.size() && positions.size() == texcoords.size());
+
+    // calculate tangents
+    tangents.reserve(positions.size());
+    for(size_t i = 0; i < positions.size(); i += 3)
+    {
+        glm::vec3 edge1 = positions[i+1] - positions[i+0];
+        glm::vec3 edge2 = positions[i+2] - positions[i+0];
+        glm::vec2 deltaUV1 = texcoords[i+1] - texcoords[i+0];
+        glm::vec2 deltaUV2 = texcoords[i+2] - texcoords[i+0]; 
+
+        float f = 1.0f / (deltaUV1.x * deltaUV2.y - deltaUV2.x * deltaUV1.y);
+        for(unsigned j = 0; j < 3; ++j)
+        {
+            tangents.emplace_back(
+                f * (deltaUV2.y * edge1.x - deltaUV1.y * edge2.x),
+                f * (deltaUV2.y * edge1.y - deltaUV1.y * edge2.y),
+                f * (deltaUV2.y * edge1.z - deltaUV1.y * edge2.z)
+            );
+        }
+    }
+
+    // fill the vbo
+
     mesh.vbo = ogl::VertexBuffer{
         positions.size() * sizeof(decltype(positions[0])) +
         normals.size()   * sizeof(decltype(normals[0])) +
-        texcoords.size() * sizeof(decltype(texcoords[0]))
+        texcoords.size() * sizeof(decltype(texcoords[0])) +
+        tangents.size() * sizeof(decltype(tangents[0]))
     };
 
     glNamedBufferSubData(mesh.vbo.getRenderID(), 
@@ -596,15 +635,24 @@ Mesh load(std::string_view path)
         normals.data()
     );
     glNamedBufferSubData(mesh.vbo.getRenderID(), 
-        positions.size() * sizeof(decltype(positions[0])) + normals.size() * sizeof(decltype(normals[0])), 
+            positions.size() * sizeof(decltype(positions[0])) + 
+            normals.size()   * sizeof(decltype(normals[0])), 
         texcoords.size() * sizeof(decltype(texcoords[0])),
         texcoords.data()
     );
+    glNamedBufferSubData(mesh.vbo.getRenderID(), 
+            positions.size() * sizeof(decltype(positions[0])) + 
+            normals.size()   * sizeof(decltype(normals[0])) + 
+            texcoords.size() * sizeof(decltype(texcoords[0])), 
+        tangents.size() * sizeof(decltype(tangents[0])),
+        tangents.data()
+    );
 
     ogl::VertexBufferLayout layout = {
-        {3, GL_FLOAT, 0},
-        {3, GL_FLOAT, positions.size() * sizeof(decltype(positions[0]))},
-        {2, GL_FLOAT, positions.size() * sizeof(decltype(positions[0])) + normals.size() * sizeof(decltype(normals[0]))}
+        /* 0. posiitons  */ { 3, GL_FLOAT, 0 },
+        /* 1. normals    */ { 3, GL_FLOAT, positions.size() * sizeof(decltype(positions[0])) },
+        /* 2. tex coords */ { 2, GL_FLOAT, positions.size() * sizeof(decltype(positions[0])) + normals.size() * sizeof(decltype(normals[0])) },
+        /* 3. tangents   */ { 3, GL_FLOAT, positions.size() * sizeof(decltype(positions[0])) + normals.size() * sizeof(decltype(normals[0])) + texcoords.size() * sizeof(decltype(texcoords[0]))} 
     };
     
     mesh.vao = ogl::VertexArray{mesh.vbo, layout};
@@ -617,6 +665,11 @@ void updateVP(Data &data, bool cameraLocked)
     data.yawPitch.falloff = glm::mix(glm::vec2{10.0f}, glm::vec2{5.0f}, static_cast<float>(!cameraLocked));
     data.distance.update(data.deltatime);
     data.distance.value = glm::clamp<float>(data.distance.value, 1, 5);
+
+    if(glm::abs(data.yawPitch.value.y) > 360.0f)
+    {
+        data.yawPitch.value.y = glm::mod(data.yawPitch.value.y, 360.0f);
+    }
 
     data.viewMat = glm::mat4{1.0f};
     data.viewMat = glm::translate(
@@ -634,6 +687,14 @@ void updateVP(Data &data, bool cameraLocked)
         glm::vec3{0, 1, 0}
     );
     data.projMat = glm::perspective<float>(glm::radians(45.0f), (float) data.windowSize.x / data.windowSize.y, 0.01, 100);
+
+
+    float cosTheta = glm::cos(glm::radians(-data.yawPitch.value.x));
+    float sinTheta = glm::sin(glm::radians(-data.yawPitch.value.x));
+    data.horizontalRotation = glm::mat2{
+         cosTheta, sinTheta,
+        -sinTheta, cosTheta
+    };
 
     data.cameraPos = glm::inverse(data.viewMat) * glm::vec4{0, 0, 0, 1};
     data.cameraDir = glm::inverse(data.viewMat) * glm::vec4{0, 0,-1, 0};
@@ -659,6 +720,33 @@ glm::vec2 rayAABB(glm::vec3 rayOrigin, glm::vec3 rayDir, glm::vec3 boxMin, glm::
     float tFar = glm::min(glm::min(t2.x, t2.y), t2.z);
     return glm::vec2(tNear, tFar);
 };
+void drawStroke(Data &data)
+{
+    glm::vec3 point = unProjectMouse(data);
+
+    glm::vec3 origin = data.cameraPos;
+    glm::vec3 dir = glm::normalize(point - origin);
+    
+    glm::vec2 intersection = rayAABB(origin, dir, glm::vec3{-CUBE_MODEL_SIZE * 0.5f}, glm::vec3{CUBE_MODEL_SIZE * 0.5f});
+
+    if(intersection.x > intersection.y)
+        return;
+    
+    data.intersectionPoint = origin + dir * intersection.x;
+    data.intersectionPoint /= CUBE_MODEL_SIZE * 0.5f;
+    glm::vec3 prevPoint = data.prevIntersectionPoint == glm::vec3{0} ? data.intersectionPoint : data.prevIntersectionPoint;
+
+    data.flowMapDrawShader.bind();
+    glBindImageTexture(0, data.flowMap.getRenderID(), 0, GL_TRUE, 0, GL_READ_WRITE, GL_RGBA16F);
+    glUniform3fv(data.flowMapDrawShader.getUniform("u_point"),      1, glm::value_ptr(data.intersectionPoint));
+    glUniform3fv(data.flowMapDrawShader.getUniform("u_prevPoint"),  1, glm::value_ptr(prevPoint));
+    glUniform2fv(data.flowMapDrawShader.getUniform("u_deltaMouse"), 1, glm::value_ptr(data.deltaMouse / glm::vec2{10.0f})); // FIXME: insert something reasonable here
+    glUniformMatrix2fv(data.flowMapDrawShader.getUniform("u_horizontalRotation"), 1, GL_FALSE, glm::value_ptr(data.horizontalRotation));
+    glDispatchCompute((data.flowMapSize + 15) / 16, (data.flowMapSize + 7) / 8, 6);
+    glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT);
+
+    data.prevIntersectionPoint = data.intersectionPoint;
+}
 void processInput(Data &data)
 {
     assert(data.window);
@@ -667,44 +755,25 @@ void processInput(Data &data)
     bool cameraLocked = glfwGetMouseButton(data.window, GLFW_MOUSE_BUTTON_RIGHT) == GLFW_PRESS && !ImGui::IsWindowFocused();
     ImGui::End();
     glfwSetInputMode(data.window, GLFW_CURSOR, cameraLocked ? GLFW_CURSOR_CAPTURED : GLFW_CURSOR_NORMAL);
+
     
     glfwGetCursorPos(data.window, &data.mousePos.x, &data.mousePos.y);
-    glm::vec2 deltaMouse = data.prevMousePos - data.mousePos;
-    deltaMouse.x = -deltaMouse.x;
+    data.deltaMouse = data.prevMousePos - data.mousePos;
+    data.deltaMouse.x = -data.deltaMouse.x;
+    data.deltaMouse /= glm::max<float>(data.windowSize.x, data.windowSize.y) / 1000.0f;
     data.prevMousePos = data.mousePos;
 
     if(cameraLocked) 
     {
-        data.yawPitch.velocity += glm::vec2{deltaMouse.x, -deltaMouse.y} * data.deltatime * data.sensitivity;
+        data.yawPitch.velocity += glm::vec2{data.deltaMouse.x, -data.deltaMouse.y} * data.deltatime * data.sensitivity * 500.0f;
     }
 
     updateVP(data, cameraLocked);
     
-    if(glfwGetMouseButton(data.window, GLFW_MOUSE_BUTTON_LEFT) && !cameraLocked && (deltaMouse != glm::vec2{0}))
+    if(glfwGetMouseButton(data.window, GLFW_MOUSE_BUTTON_LEFT) && !cameraLocked && (data.deltaMouse != glm::vec2{0}))
     {
-        glm::vec3 point = unProjectMouse(data);
-
-        glm::vec3 origin = data.cameraPos;
-        glm::vec3 dir = glm::normalize(point - origin);
-        
-        glm::vec2 intersection = rayAABB(origin, dir, glm::vec3{-CUBE_MODEL_SIZE * 0.5f}, glm::vec3{CUBE_MODEL_SIZE * 0.5f});
-
-        if(intersection.x <= intersection.y)
-        {
-            data.intersectionPoint = origin + dir * intersection.x;
-            data.intersectionPoint /= CUBE_MODEL_SIZE * 0.5f;
-            glm::vec3 prevPoint = data.prevIntersectionPoint == glm::vec3{0} ? data.intersectionPoint : data.prevIntersectionPoint;
-
-            data.flowMapDrawShader.bind();
-            glBindImageTexture(0, data.flowMap.getRenderID(), 0, GL_TRUE, 0, GL_READ_WRITE, GL_RGBA16F);
-            glUniform3fv(data.flowMapDrawShader.getUniform("u_point"),      1, glm::value_ptr(data.intersectionPoint));
-            glUniform3fv(data.flowMapDrawShader.getUniform("u_prevPoint"),  1, glm::value_ptr(prevPoint));
-            glUniform2fv(data.flowMapDrawShader.getUniform("u_deltaMouse"), 1, glm::value_ptr(deltaMouse / glm::vec2{10.0f})); // FIXME: insert something reasonable here
-            glDispatchCompute((data.flowMapSize + 15) / 16, (data.flowMapSize + 7) / 8, 6);
-            glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT);
-
-            data.prevIntersectionPoint = data.intersectionPoint;
-        }
+        if(glm::abs(data.yawPitch.value.y) > 90.0f) data.deltaMouse = -data.deltaMouse;
+        drawStroke(data);
     }
     else 
     {
@@ -718,7 +787,7 @@ void scroll_callback(GLFWwindow* window, double xoffset, double yoffset)
     if(ImGui::IsWindowFocused()) {
         ImGui_ImplGlfw_ScrollCallback(window, xoffset, yoffset);
     } else {
-        data.distance.velocity -= yoffset * data.deltatime * data.sensitivity;
+        data.distance.velocity -= yoffset * data.deltatime * data.sensitivity * 500.0f;
     }
     ImGui::End();
 }
