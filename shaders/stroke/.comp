@@ -7,6 +7,7 @@ uniform vec3 u_prevPoint;
 uniform vec2 u_deltaMouse;
 uniform float u_brush_size = 0.1;
 uniform float u_strength = 1;
+uniform float u_verticalMult = 1;
 uniform bool u_erase = false;
 uniform mat2 u_horizontalRotation;
 uniform bool u_hdrFlowMap;
@@ -35,7 +36,7 @@ mat2 getRotation()
 {
          if(gl_GlobalInvocationID.z == 2) return u_horizontalRotation;
     else if(gl_GlobalInvocationID.z == 3) return transpose(u_horizontalRotation);
-    else                                  return mat2(1.0f);  
+    else                                  return mat2(1, 0, 0, u_verticalMult);  
 }
 
 void main() 

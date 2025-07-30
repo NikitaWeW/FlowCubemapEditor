@@ -41,7 +41,10 @@ THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLI
 #include "imgui.h"
 #include "imgui_impl_opengl3.h"
 #include "imgui_impl_glfw.h"
+#include "imgui_stdlib.h"
 
+#include "stb_image.h"
+#include "stb_image_write.h"
 #include "logger.h"
 #include "tiny_obj_loader.h"
 #include "ease_functions.hpp"
@@ -51,12 +54,14 @@ THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLI
 #include "opengl/IndexBuffer.hpp"
 #include "opengl/VertexBuffer.hpp"
 #include "opengl/Shader.hpp"
+#include "opengl/Bitmap.hpp"
 
 #include <chrono>
 #include <memory>
 #include <thread>
 #include <iostream>
 #include <stdexcept>
+#include <algorithm>
 
 struct Mesh
 {
@@ -80,6 +85,10 @@ struct VelocityVariable
         T curve = easeFunc(x);
         velocity -= velocity * curve * deltatime * falloff;
     }
+};
+enum SaveType : int
+{
+    PNG, BMP, HDR, JPG, TGA
 };
 // for a small application like this i think its fine to use a single struct as an app state
 struct Data
@@ -106,19 +115,24 @@ struct Data
 
     ogl::ShaderProgram flowMapDrawShader;
     ogl::ShaderProgram flowMapClearShader;
+    ogl::ShaderProgram cubemapBlurShader;
 
     float deltatime = 0.1;
 
     VelocityVariable<glm::vec2> yawPitch{.value = glm::vec2{0}};
     VelocityVariable<float> distance{.value = 3};
 
-    struct {
+    struct Inputs {
+        int saveType = PNG;
         bool eraseMode;
         float sensitivity = 1;
         float brushSize = 0.1;
         int showFlow = false;
         bool hdrFlowmap = true;
+        unsigned blurSteps = 4;
     } inputs;
+
+    std::string currentFile{};
 };
 
 constexpr unsigned NUM_SAMPLES = 4;
@@ -128,6 +142,7 @@ constexpr float ZFAR = 100;
 constexpr float CUBE_MODEL_SIZE = 1.0f; 
 
 void resizeColorAttachment(ogl::Framebuffer &fbo, ogl::Texture &texture, glm::ivec2 size, GLenum attachment = GL_COLOR_ATTACHMENT0);
+int main(int argc, char **argv);
 void resizeColorAttachment(ogl::Framebuffer &fbo, ogl::TextureMS &texture, glm::ivec2 size, GLenum attachment = GL_COLOR_ATTACHMENT0);
 bool init(GLFWwindow **window);
 Mesh load(std::string_view path);
@@ -135,6 +150,9 @@ void processInput(Data &data);
 void scroll_callback(GLFWwindow* window, double xoffset, double yoffset);
 void helpMarker(const char* desc);
 void clearFlowMap(Data &data);
+void saveUnwrapped(Data &data);
+void saveSixImages(Data &data);
+void saveEquirectangular(Data &data);
 
 int main(int argc, char **argv)
 {
@@ -146,6 +164,7 @@ int main(int argc, char **argv)
     assert(window);
 
     // ===================================
+    Data data{};
 
     ogl::Cubemap skybox{"res/textures/qwantani_dawn_puresky_4k.hdr"};
     ogl::Texture flowTexture{"res/textures/water.jpg"};
@@ -154,6 +173,10 @@ int main(int argc, char **argv)
     ogl::ShaderProgram displayShader{"shaders/hdrImage"};
     ogl::ShaderProgram skyboxShader{"shaders/skybox"};
     ogl::ShaderProgram gridShader{"shaders/grid"};
+    data.flowMapDrawShader = ogl::ShaderProgram{"shaders/stroke"};
+    data.flowMapClearShader = ogl::ShaderProgram{"shaders/clear"};
+    data.cubemapBlurShader = ogl::ShaderProgram{"shaders/blurCubemap"};
+
 
     Mesh cube = load("res/models/cube.obj");
 
@@ -167,7 +190,6 @@ int main(int argc, char **argv)
 
     // ===================================
 
-    Data data{};
     data.window = window;
     data.distance.falloff = 10;
 
@@ -182,8 +204,8 @@ int main(int argc, char **argv)
         data.flowMapSize
     );
 
-    data.flowMapDrawShader = ogl::ShaderProgram{"shaders/stroke"};
-    data.flowMapClearShader = ogl::ShaderProgram{"shaders/clear"};
+    bool dontAskToClear = false;
+    bool nextTime = false;
 
     // ===================================
     
@@ -210,7 +232,7 @@ int main(int argc, char **argv)
         ImGuiIO &io = ImGui::GetIO();
 
         glViewport(0, 0, data.windowSize.x, data.windowSize.y);
-        if (io.ConfigFlags & ImGuiConfigFlags_DockingEnable)
+        if(io.ConfigFlags & ImGuiConfigFlags_DockingEnable)
         {
             ImGuiID dockspace_id = ImGui::GetID("Editor DockSpace");
             ImGui::DockSpaceOverViewport(dockspace_id, ImGui::GetMainViewport(), ImGuiDockNodeFlags_PassthruCentralNode);
@@ -333,7 +355,7 @@ int main(int argc, char **argv)
         // ImGui stuff 
         // ============
         
-        ImGui::Begin(CONFIG_WINDOW_NAME.data());
+        ImGui::Begin(CONFIG_WINDOW_NAME.data(), nullptr, ImGuiWindowFlags_MenuBar);
 
         ImGui::DragFloat("Sensitivity", &data.inputs.sensitivity, 0.01, 0.01, 100);
         ImGui::SliderFloat("Brush Size", &data.inputs.brushSize, 0.01, 0.5w);
@@ -349,36 +371,122 @@ int main(int argc, char **argv)
         ImGui::RadioButton("Water", &data.inputs.showFlow, 0);
 
         if(ImGui::Checkbox("HDR flowmap", &data.inputs.hdrFlowmap))
-            ImGui::OpenPopup("Clear?");
+            ImGui::OpenPopup("Clear? (HDR)");
         helpMarker("Flow direction vectors won't be clamped to the range of [0; 1], which allows more dynamic flows.\nThe cube needs to be cleared after changing this option.");
 
-        if(ImGui::Button("Clear"))
+        ImGui::Separator();
+
+        if(ImGui::Button("Clear")) 
             ImGui::OpenPopup("Clear?");
+
+        if(ImGui::Button("Save")) {
+            if(data.currentFile == "")
+                ImGui::OpenPopup("Save As");
+            else
+                ImGui::OpenPopup("Save");
+        }
+        ImGui::SameLine();
+        if(ImGui::Button("Save As.."))
+            ImGui::OpenPopup("Save As");
 
         if(ImGui::BeginPopupModal("Clear?", NULL, ImGuiWindowFlags_AlwaysAutoResize))
         {
-            ImGui::Text("Your current drawing will be cleared.\nThis operation cannot be undone!");
+            ImGui::Text("You need to clear after changing hdr option.\nYour current drawing will be cleared.\nThis operation cannot be undone!");
             ImGui::Separator();
 
-            static bool dont_ask_me_next_time = false;
-
             ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(0, 0));
-            ImGui::Checkbox("Don't ask me next time", &dont_ask_me_next_time);
+            ImGui::Checkbox("Don't ask me next time", &dontAskToClear);
             ImGui::PopStyleVar();
 
-            if (ImGui::Button("OK", ImVec2(120, 0)) || dont_ask_me_next_time) { 
+            if(ImGui::Button("OK", ImVec2(120, 0)) || (dontAskToClear && nextTime)) { 
                 clearFlowMap(data);
+                nextTime = true;
                 ImGui::CloseCurrentPopup(); 
             }
             ImGui::SetItemDefaultFocus();
             ImGui::SameLine();
-            if (ImGui::Button("Cancel", ImVec2(120, 0))) { ImGui::CloseCurrentPopup(); }
+            if(ImGui::Button("Cancel", ImVec2(120, 0))) { 
+                ImGui::CloseCurrentPopup(); 
+            }
+            ImGui::EndPopup();
+        }
+        if(ImGui::BeginPopupModal("Clear? (HDR)", NULL, ImGuiWindowFlags_AlwaysAutoResize))
+        {
+            ImGui::Text("Your current drawing will be cleared.\nThis operation cannot be undone!");
+            ImGui::Separator();
+
+            ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(0, 0));
+            ImGui::Checkbox("Don't ask me next time", &dontAskToClear);
+            ImGui::PopStyleVar();
+
+            if(ImGui::Button("OK", ImVec2(120, 0)) || (dontAskToClear && nextTime)) { 
+                clearFlowMap(data);
+                nextTime = true;
+                ImGui::CloseCurrentPopup(); 
+            }
+            ImGui::SetItemDefaultFocus();
+            ImGui::SameLine();
+            if(ImGui::Button("Cancel", ImVec2(120, 0))) { 
+                data.inputs.hdrFlowmap = !data.inputs.hdrFlowmap;
+                ImGui::CloseCurrentPopup(); 
+            }
+            ImGui::EndPopup();
+        }
+        if(ImGui::BeginPopupModal("Save As", NULL, ImGuiWindowFlags_AlwaysAutoResize))
+        {
+            if(data.inputs.hdrFlowmap)
+                ImGui::Text("HDR is enabled");
+            else
+                ImGui::Text("HDR is disabled");
+            ImGui::Separator();
+
+            static int type = 0;
+            enum SaveLayout { UNWRAPPED = 0, SIX_IMAGES = 1, EQUIRECTANGULAR = 2 };
+            ImGui::Combo("layout", &type, "unwrapped cube\0six images\0equirectangular\0");
+            ImGui::Combo("type", &data.inputs.saveType, "png\0bmp\0hdr\0jpg\0tga\0");
+
+            static int intHackBlurSteps = 4;
+            ImGui::InputInt("Blur steps", &intHackBlurSteps, 1, 2);
+            helpMarker("Controlls the smoothness of strokes.");
+            intHackBlurSteps = glm::max(intHackBlurSteps, 0);
+            data.inputs.blurSteps = static_cast<unsigned>(intHackBlurSteps);
+
+            ImGui::Separator();
+
+            if(type == SIX_IMAGES)
+                ImGui::InputText("path (directory)", &data.currentFile);
+            else
+                ImGui::InputText("path", &data.currentFile);
+
+            if(ImGui::Button("Save", ImVec2(120, 0))) { 
+                switch (type)
+                {
+                case UNWRAPPED:
+                    saveUnwrapped(data);
+                    break;
+                case SIX_IMAGES:
+                    saveSixImages(data);
+                    break;
+                case EQUIRECTANGULAR:
+                    saveEquirectangular(data);
+                    break;
+                default:
+                    assert(false && "unrecognized save layout (not implemented)"); // TODO
+                    break;
+                }
+                ImGui::CloseCurrentPopup(); 
+            }
+            ImGui::SetItemDefaultFocus();
+            ImGui::SameLine();
+            if(ImGui::Button("Cancel", ImVec2(120, 0))) { 
+                data.currentFile = "";
+                ImGui::CloseCurrentPopup(); 
+            }
+
             ImGui::EndPopup();
         }
 
         ImGui::End();
-
-        ImGui::ShowDemoWindow();
         
         glfwPollEvents();
         ImGui::Render();
@@ -530,7 +638,7 @@ void resizeColorAttachment(ogl::Framebuffer &fbo, ogl::Texture &texture, glm::iv
 }
 bool init(GLFWwindow **window)
 {
-    if (!glfwInit()) {
+    if(!glfwInit()) {
         LOG_FATAL("failed to initialize glfw!");
         return false;
     }
@@ -546,12 +654,12 @@ bool init(GLFWwindow **window)
     *window = glfwCreateWindow(mode->width * 0.5, mode->height * 0.5, "opengl", nullptr, nullptr);
     glfwSetWindowTitle(*window, "flow cubemap editor v0.0 (still broken)");
 
-    if (!*window) {
+    if(!*window) {
         LOG_FATAL("failed to initialize window.");
         return false;
     }
     glfwMakeContextCurrent(*window);
-    if (!gladLoadGL((GLADloadfunc) glfwGetProcAddress)) {
+    if(!gladLoadGL((GLADloadfunc) glfwGetProcAddress)) {
         LOG_FATAL("gladLoadGL: Failed to initialize GLAD!");
         return false;
     }
@@ -786,12 +894,13 @@ void drawStroke(Data &data)
 
     data.flowMapDrawShader.bind();
     glBindImageTexture(0, data.flowMap.getRenderID(), 0, GL_TRUE, 0, GL_READ_WRITE, GL_RGBA16F);
-    glUniform3fv(data.flowMapDrawShader.getUniform("u_point"),      1, glm::value_ptr(data.intersectionPoint));
-    glUniform3fv(data.flowMapDrawShader.getUniform("u_prevPoint"),  1, glm::value_ptr(prevPoint));
-    glUniform1f (data.flowMapDrawShader.getUniform("u_brush_size"), data.inputs.brushSize);
-    glUniform1i (data.flowMapDrawShader.getUniform("u_erase"),      data.inputs.eraseMode);
-    glUniform1i (data.flowMapDrawShader.getUniform("u_hdrFlowMap"), data.inputs.hdrFlowmap);
-    glUniform2fv(data.flowMapDrawShader.getUniform("u_deltaMouse"), 1, glm::value_ptr(data.deltaMouse / glm::vec2{10.0f})); // FIXME: insert something reasonable here
+    glUniform3fv(data.flowMapDrawShader.getUniform("u_point"),       1, glm::value_ptr(data.intersectionPoint));
+    glUniform3fv(data.flowMapDrawShader.getUniform("u_prevPoint"),   1, glm::value_ptr(prevPoint));
+    glUniform1f (data.flowMapDrawShader.getUniform("u_brush_size"),     data.inputs.brushSize);
+    glUniform1i (data.flowMapDrawShader.getUniform("u_erase"),          data.inputs.eraseMode);
+    glUniform1f (data.flowMapDrawShader.getUniform("u_verticalMult"),   glm::abs(data.yawPitch.value.y) > 90.0f ? -1 : 1);
+    glUniform1i (data.flowMapDrawShader.getUniform("u_hdrFlowMap"),     data.inputs.hdrFlowmap);
+    glUniform2fv(data.flowMapDrawShader.getUniform("u_deltaMouse"),  1, glm::value_ptr(data.deltaMouse / glm::vec2{10.0f})); // FIXME: insert something reasonable here
     glUniformMatrix2fv(data.flowMapDrawShader.getUniform("u_horizontalRotation"), 1, GL_FALSE, glm::value_ptr(data.horizontalRotation));
     glDispatchCompute((data.flowMapSize + 15) / 16, (data.flowMapSize + 7) / 8, 6);
     glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT);
@@ -802,7 +911,7 @@ void processInput(Data &data)
 {
     assert(data.window);
 
-    ImGui::Begin(CONFIG_WINDOW_NAME.data());
+        ImGui::Begin(CONFIG_WINDOW_NAME.data(), nullptr, ImGuiWindowFlags_MenuBar);
     bool cameraLocked = glfwGetMouseButton(data.window, GLFW_MOUSE_BUTTON_RIGHT) == GLFW_PRESS;
     glfwSetInputMode(data.window, GLFW_CURSOR, cameraLocked ? GLFW_CURSOR_CAPTURED : GLFW_CURSOR_NORMAL);
     
@@ -822,7 +931,6 @@ void processInput(Data &data)
     
     if(glfwGetMouseButton(data.window, GLFW_MOUSE_BUTTON_LEFT) && !cameraLocked && (data.deltaMouse != glm::vec2{0}) && !ImGui::IsWindowFocused())
     {
-        if(glm::abs(data.yawPitch.value.y) > 90.0f) data.deltaMouse = -data.deltaMouse;
         drawStroke(data);
     }
     else 
@@ -834,7 +942,7 @@ void processInput(Data &data)
 void scroll_callback(GLFWwindow* window, double xoffset, double yoffset)
 {
     Data &data = *static_cast<Data *>(glfwGetWindowUserPointer(window));
-    ImGui::Begin(CONFIG_WINDOW_NAME.data());
+        ImGui::Begin(CONFIG_WINDOW_NAME.data(), nullptr, ImGuiWindowFlags_MenuBar);
     if(ImGui::IsWindowFocused()) {
         ImGui_ImplGlfw_ScrollCallback(window, xoffset, yoffset);
     } else {
@@ -846,7 +954,7 @@ void helpMarker(const char* desc)
 {
     ImGui::SameLine();
     ImGui::TextDisabled("(?)");
-    if (ImGui::BeginItemTooltip())
+    if(ImGui::BeginItemTooltip())
     {
         ImGui::PushTextWrapPos(ImGui::GetFontSize() * 35.0f);
         ImGui::TextUnformatted(desc);
@@ -861,4 +969,187 @@ void clearFlowMap(Data &data)
     glUniform1i(data.flowMapClearShader.getUniform("u_hdrFlowMap"), data.inputs.hdrFlowmap);
     glDispatchCompute((data.flowMapSize + 15) / 16, (data.flowMapSize + 7) / 8, 6);
     glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT);
+}
+ogl::Cubemap blurFlowmap(Data &data)
+{
+
+    std::array<ogl::Cubemap, 2> pinpong;
+    unsigned currentCubemap = 0;
+    for(size_t i = 0; i < pinpong.size(); ++i)
+    {
+        pinpong[i] = ogl::Cubemap{0};
+        glTextureStorage2D(
+            pinpong[i].getRenderID(),
+            1,
+            GL_RGBA16F,
+            data.flowMapSize,
+            data.flowMapSize
+        );
+    }
+    
+    glCopyImageSubData(
+        data.flowMap.getRenderID(),            // src name
+        GL_TEXTURE_CUBE_MAP,                   // src target
+        0,                                     // src level
+        0, 0, 0,                               // src x,y,z
+        pinpong[currentCubemap].getRenderID(), // dst name
+        GL_TEXTURE_CUBE_MAP,                   // dst target
+        0,                                     // dst level
+        0, 0, 0,                               // dst x,y,z
+        data.flowMapSize,                      // width
+        data.flowMapSize,                      // height
+        6                                      // depth
+    );
+
+    data.cubemapBlurShader.bind();
+    
+    for(unsigned i = 0; i < data.inputs.blurSteps * 2; ++i)
+    {
+        glUniform1f(data.cubemapBlurShader.getUniform("u_time"), i + 1);
+        glBindImageTexture(0, pinpong[currentCubemap].getRenderID(),  0, GL_TRUE, 0, GL_READ_ONLY,  GL_RGBA16F);
+        glBindImageTexture(1, pinpong[!currentCubemap].getRenderID(), 0, GL_TRUE, 0, GL_WRITE_ONLY, GL_RGBA16F);
+        glDispatchCompute((data.flowMapSize + 15) / 16, (data.flowMapSize + 7) / 8, 6);
+        glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT);
+
+        currentCubemap = !currentCubemap;
+    }
+
+    return pinpong[currentCubemap];
+}
+void save(int type, std::string path, glm::uvec2 size, unsigned numComponents, float const *data)
+{
+    assert(path != "");
+    std::unique_ptr<unsigned char[]> u8data = nullptr;
+    if(type != HDR)
+    {
+        u8data = std::make_unique<unsigned char[]>(size.x * size.y * numComponents);
+        for (unsigned i = 0; i < size.x * size.y * numComponents; ++i) {
+            u8data[i] = static_cast<unsigned char>(glm::clamp(data[i], 0.0f, 1.0f) * 255.0f + 0.5f);
+        }
+    }
+
+    std::replace(path.begin(), path.end(), '\\', '/');
+    std::filesystem::create_directories(path.substr(0, path.find_last_of('/')));
+    
+    switch (type)
+    {
+    case PNG:
+        path += ".png";
+        assert(u8data);
+        stbi_write_png(path.data(), size.x, size.y, numComponents, u8data.get(), size.x * numComponents);
+        break;
+    case HDR:
+        path += ".hdr";
+        stbi_write_hdr(path.data(), size.x, size.y, numComponents, data);
+        break;
+    case BMP:
+        path += ".bmp";
+        assert(u8data);
+        stbi_write_bmp(path.data(), size.x, size.y, numComponents, u8data.get());
+        break;
+    case JPG:
+        path += ".jpg";
+        assert(u8data);
+        stbi_write_jpg(path.data(), size.x, size.y, numComponents, u8data.get(), 80);
+        break;
+    case TGA:
+        path += ".tga";
+        assert(u8data);
+        stbi_write_tga(path.data(), size.x, size.y, numComponents, u8data.get());
+        break;
+    default:
+        assert(false && "unrecognized save type");
+        break;
+    }
+}
+void saveUnwrapped(Data &data)
+{
+    assert(data.currentFile != "");
+    ogl::Cubemap flowMap = blurFlowmap(data);
+
+    ogl::Texture unwrappedTexture{GL_NEAREST, GL_NEAREST, GL_CLAMP_TO_EDGE};
+
+    int const numComponents = 4;
+    glm::uvec2 const size{data.flowMapSize * 3, data.flowMapSize * 2};
+
+    glTextureStorage2D(unwrappedTexture.getRenderID(), 1, GL_RGBA16F, size.x, size.y);
+
+    constexpr std::array<glm::uvec2, 6> cells = {
+        glm::uvec2{ 0, 0 },
+        glm::uvec2{ 1, 0 },
+        glm::uvec2{ 2, 0 },
+        glm::uvec2{ 0, 1 },
+        glm::uvec2{ 1, 1 },
+        glm::uvec2{ 2, 1 } 
+    };
+
+    for(int i = 0; i < 6; ++i){
+        glm::uvec2 pos = cells[i] * data.flowMapSize;
+        glCopyImageSubData(
+            flowMap.getRenderID(),          // src name
+            GL_TEXTURE_CUBE_MAP,            // src target
+            0,                              // src level
+            0, 0, i,                        // src x,y,z
+            unwrappedTexture.getRenderID(), // dst name
+            GL_TEXTURE_2D,                  // dst target
+            0,                              // dst level
+            pos.x, pos.y, 0,                // dst x,y,z
+            data.flowMapSize,               // width
+            data.flowMapSize,               // height
+            1                               // depth
+        );
+    }
+
+    std::unique_ptr<float[]> textureData = std::make_unique<float[]>(size.x * size.y * numComponents);
+    
+    // FIXME: pbo maybe?
+    glPixelStorei(GL_PACK_ALIGNMENT, 1);
+    glGetTextureImage(unwrappedTexture.getRenderID(), 0, GL_RGBA, GL_FLOAT, size.x * size.y * numComponents * sizeof(float), textureData.get());
+
+
+    save(data.inputs.saveType, data.currentFile, size, numComponents, textureData.get());
+}
+void saveSixImages(Data &data)
+{
+    ogl::Cubemap flowMap = blurFlowmap(data);
+
+    int const numComponents = 4;
+
+    std::array<std::string_view, 6> names = {
+        "pos_x", "neg_x", "pos_y", "neg_y", "pos_z", "neg_z" 
+    };
+
+    for(int i = 0; i < 6; ++i){
+        ogl::Texture faceTexture{GL_NEAREST, GL_NEAREST, GL_CLAMP_TO_EDGE};
+        glTextureStorage2D(faceTexture.getRenderID(), 1, GL_RGBA16F, data.flowMapSize, data.flowMapSize);
+
+        glCopyImageSubData(
+            flowMap.getRenderID(),          // src name
+            GL_TEXTURE_CUBE_MAP,            // src target
+            0,                              // src level
+            0, 0, i,                        // src x,y,z
+            faceTexture.getRenderID(),      // dst name
+            GL_TEXTURE_2D,                  // dst target
+            0,                              // dst level
+            0, 0, 0,                        // dst x,y,z
+            data.flowMapSize,               // width
+            data.flowMapSize,               // height
+            1                               // depth
+        );
+
+        std::unique_ptr<float[]> textureData = std::make_unique<float[]>(data.flowMapSize * data.flowMapSize * numComponents);
+        
+        // FIXME: pbo maybe?
+        glPixelStorei(GL_PACK_ALIGNMENT, 1);
+        glGetTextureImage(faceTexture.getRenderID(), 0, GL_RGBA, GL_FLOAT, data.flowMapSize * data.flowMapSize * numComponents * sizeof(float), textureData.get());
+
+        std::string path = data.currentFile;
+        path = path + '/' + std::string{names[i]};
+
+        save(data.inputs.saveType, path, glm::uvec2{data.flowMapSize, data.flowMapSize}, numComponents, textureData.get());
+    }
+}
+void saveEquirectangular(Data &data)
+{
+    assert(false && "not implemented");
 }
