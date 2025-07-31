@@ -9,7 +9,6 @@ in VS_OUT {
 layout (binding = 0) uniform samplerCube u_flowMap;
 layout (binding = 1) uniform sampler2D u_texture;
 uniform bool u_showFlow;
-uniform bool u_hdrFlowMap;
 uniform float u_time;
 
 const float flowIntencity = 0.05;
@@ -39,11 +38,6 @@ void main()
 {
     vec2 flow = textureBlurred(u_flowMap, fs_in.fragPos, 0.05).rg;
 
-    if(!u_hdrFlowMap) 
-    {
-        flow = flow * 2 - 1;
-        flow *= 10; // too slow
-    }
     flow *= flowIntencity;
 
     if(u_showFlow)

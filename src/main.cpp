@@ -88,8 +88,13 @@ struct VelocityVariable
 };
 enum SaveType : int
 {
-    PNG, BMP, HDR, JPG, TGA
+    PNG = 0, HDR = 1, JPG = 2
 };
+enum SaveLayout : int 
+{ 
+    UNWRAPPED = 0, SIX_IMAGES = 1, EQUIRECTANGULAR = 2 
+};
+
 // for a small application like this i think its fine to use a single struct as an app state
 struct Data
 {
@@ -124,15 +129,16 @@ struct Data
 
     struct Inputs {
         int saveType = PNG;
+        int saveLayout = UNWRAPPED;
         bool eraseMode;
         float sensitivity = 1;
         float brushSize = 0.1;
         int showFlow = false;
         bool hdrFlowmap = true;
         unsigned blurSteps = 4;
+        std::string currentFIle = "flowmap";
     } inputs;
 
-    std::string currentFile{};
 };
 
 constexpr unsigned NUM_SAMPLES = 4;
@@ -318,7 +324,6 @@ int main(int argc, char **argv)
         flowTexture.bind(1);
         
         glUniform1i(       cubeShader.getUniform("u_showFlow"),       data.inputs.showFlow);
-        glUniform1i(       cubeShader.getUniform("u_hdrFlowMap"),     data.inputs.hdrFlowmap);
         glUniform1f(       cubeShader.getUniform("u_time"),           glfwGetTime());
         glUniformMatrix4fv(cubeShader.getUniform("u_modelMat"),       1, GL_FALSE, glm::value_ptr(glm::mat4{1.0f}));
         glUniformMatrix4fv(cubeShader.getUniform("u_viewMat"),        1, GL_FALSE, glm::value_ptr(data.viewMat));
@@ -370,20 +375,36 @@ int main(int argc, char **argv)
         ImGui::RadioButton("Flow", &data.inputs.showFlow, 1); ImGui::SameLine();
         ImGui::RadioButton("Water", &data.inputs.showFlow, 0);
 
-        if(ImGui::Checkbox("HDR flowmap", &data.inputs.hdrFlowmap))
-            ImGui::OpenPopup("Clear? (HDR)");
-        helpMarker("Flow direction vectors won't be clamped to the range of [0; 1], which allows more dynamic flows.\nThe cube needs to be cleared after changing this option.");
-
         ImGui::Separator();
 
         if(ImGui::Button("Clear")) 
             ImGui::OpenPopup("Clear?");
 
+        ImGui::SameLine();
+        if(ImGui::Button("Load"))
+            ImGui::OpenPopup("Load flowmap");
+
         if(ImGui::Button("Save")) {
-            if(data.currentFile == "")
+            if(data.inputs.currentFIle == "")
                 ImGui::OpenPopup("Save As");
             else
-                ImGui::OpenPopup("Save");
+            {
+                switch (data.inputs.saveLayout)
+                {
+                case UNWRAPPED:
+                    saveUnwrapped(data);
+                    break;
+                case SIX_IMAGES:
+                    saveSixImages(data);
+                    break;
+                case EQUIRECTANGULAR:
+                    saveEquirectangular(data);
+                    break;
+                default:
+                    assert(false && "unrecognized save layout (not implemented)");
+                    break;
+                }
+            }
         }
         ImGui::SameLine();
         if(ImGui::Button("Save As.."))
@@ -410,68 +431,89 @@ int main(int argc, char **argv)
             }
             ImGui::EndPopup();
         }
-        if(ImGui::BeginPopupModal("Clear? (HDR)", NULL, ImGuiWindowFlags_AlwaysAutoResize))
-        {
-            ImGui::Text("Your current drawing will be cleared.\nThis operation cannot be undone!");
-            ImGui::Separator();
-
-            ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(0, 0));
-            ImGui::Checkbox("Don't ask me next time", &dontAskToClear);
-            ImGui::PopStyleVar();
-
-            if(ImGui::Button("OK", ImVec2(120, 0)) || (dontAskToClear && nextTime)) { 
-                clearFlowMap(data);
-                nextTime = true;
-                ImGui::CloseCurrentPopup(); 
-            }
-            ImGui::SetItemDefaultFocus();
-            ImGui::SameLine();
-            if(ImGui::Button("Cancel", ImVec2(120, 0))) { 
-                data.inputs.hdrFlowmap = !data.inputs.hdrFlowmap;
-                ImGui::CloseCurrentPopup(); 
-            }
-            ImGui::EndPopup();
-        }
         if(ImGui::BeginPopupModal("Save As", NULL, ImGuiWindowFlags_AlwaysAutoResize))
         {
-            if(data.inputs.hdrFlowmap)
-                ImGui::Text("HDR is enabled");
-            else
-                ImGui::Text("HDR is disabled");
+            ImGui::Checkbox("HDR flowmap", &data.inputs.hdrFlowmap);
+            helpMarker("Flow direction vectors won't be clamped to the range of [0; 1], which allows more dynamic flows.\nThe cube needs to be cleared after changing this option.");
             ImGui::Separator();
 
-            static int type = 0;
-            enum SaveLayout { UNWRAPPED = 0, SIX_IMAGES = 1, EQUIRECTANGULAR = 2 };
-            ImGui::Combo("layout", &type, "unwrapped cube\0six images\0equirectangular\0");
-            ImGui::Combo("type", &data.inputs.saveType, "png\0bmp\0hdr\0jpg\0tga\0");
+            ImGui::Combo("layout", &data.inputs.saveLayout, "unwrapped cube\0six images\0equirectangular\0");
+            ImGui::Combo("type", &data.inputs.saveType, "png\0hdr\0jpg\0");
 
-            static int intHackBlurSteps = 4;
+            static int intHackBlurSteps = 16;
             ImGui::InputInt("Blur steps", &intHackBlurSteps, 1, 2);
-            helpMarker("Controlls the smoothness of strokes.");
+            helpMarker("Controls the smoothness of strokes.");
             intHackBlurSteps = glm::max(intHackBlurSteps, 0);
             data.inputs.blurSteps = static_cast<unsigned>(intHackBlurSteps);
 
             ImGui::Separator();
 
-            if(type == SIX_IMAGES)
-                ImGui::InputText("path (directory)", &data.currentFile);
+            if(data.inputs.saveLayout == SIX_IMAGES)
+                ImGui::InputText("path (directory)", &data.inputs.currentFIle);
             else
-                ImGui::InputText("path", &data.currentFile);
+                ImGui::InputText("path", &data.inputs.currentFIle);
 
-            if(ImGui::Button("Save", ImVec2(120, 0))) { 
+            if(data.inputs.currentFIle != "")
+            {
+                if(ImGui::Button("Save", ImVec2(120, 0))) { 
+                    switch (data.inputs.saveLayout)
+                    {
+                    case UNWRAPPED:
+                        saveUnwrapped(data);
+                        break;
+                    case SIX_IMAGES:
+                        saveSixImages(data);
+                        break;
+                    case EQUIRECTANGULAR:
+                        saveEquirectangular(data);
+                        break;
+                    default:
+                        assert(false && "unrecognized save layout (not implemented)");
+                        break;
+                    }
+                    ImGui::CloseCurrentPopup(); 
+                }
+
+                ImGui::SameLine();
+            }
+            ImGui::SetItemDefaultFocus();
+            if(ImGui::Button("Cancel", ImVec2(120, 0))) { 
+                data.inputs.currentFIle = "";
+                ImGui::CloseCurrentPopup(); 
+            }
+
+            ImGui::EndPopup();
+        }
+        if(ImGui::BeginPopupModal("Load flowmap", NULL, ImGuiWindowFlags_AlwaysAutoResize))
+        {
+            ImGui::Checkbox("HDR flowmap", &data.inputs.hdrFlowmap);
+
+            static int type = 0;
+            enum SaveLayout { UNWRAPPED = 0, SIX_IMAGES = 1, EQUIRECTANGULAR = 2 };
+            ImGui::Combo("layout", &type, "unwrapped cube\0six images\0equirectangular\0");
+            ImGui::Combo("type", &data.inputs.saveType, "png\0hdr\0jpg\0");
+
+            ImGui::Separator();
+
+            if(type == SIX_IMAGES)
+                ImGui::InputText("path (directory)", &data.inputs.currentFIle);
+            else
+                ImGui::InputText("path", &data.inputs.currentFIle);
+
+            if(ImGui::Button("Load", ImVec2(120, 0))) { 
                 switch (type)
                 {
-                case UNWRAPPED:
-                    saveUnwrapped(data);
-                    break;
-                case SIX_IMAGES:
-                    saveSixImages(data);
-                    break;
-                case EQUIRECTANGULAR:
-                    saveEquirectangular(data);
-                    break;
+                // case UNWRAPPED:
+                //     loadUnwrapped(data);
+                //     break;
+                // case SIX_IMAGES:
+                //     loadSixImages(data);
+                //     break;
+                // case EQUIRECTANGULAR:
+                //     loadEquirectangular(data);
+                //     break;
                 default:
-                    assert(false && "unrecognized save layout (not implemented)"); // TODO
+                    assert(false && "unrecognized save layout (not implemented)");
                     break;
                 }
                 ImGui::CloseCurrentPopup(); 
@@ -479,7 +521,7 @@ int main(int argc, char **argv)
             ImGui::SetItemDefaultFocus();
             ImGui::SameLine();
             if(ImGui::Button("Cancel", ImVec2(120, 0))) { 
-                data.currentFile = "";
+                data.inputs.currentFIle = "";
                 ImGui::CloseCurrentPopup(); 
             }
 
@@ -899,7 +941,6 @@ void drawStroke(Data &data)
     glUniform1f (data.flowMapDrawShader.getUniform("u_brush_size"),     data.inputs.brushSize);
     glUniform1i (data.flowMapDrawShader.getUniform("u_erase"),          data.inputs.eraseMode);
     glUniform1f (data.flowMapDrawShader.getUniform("u_verticalMult"),   glm::abs(data.yawPitch.value.y) > 90.0f ? -1 : 1);
-    glUniform1i (data.flowMapDrawShader.getUniform("u_hdrFlowMap"),     data.inputs.hdrFlowmap);
     glUniform2fv(data.flowMapDrawShader.getUniform("u_deltaMouse"),  1, glm::value_ptr(data.deltaMouse / glm::vec2{10.0f})); // FIXME: insert something reasonable here
     glUniformMatrix2fv(data.flowMapDrawShader.getUniform("u_horizontalRotation"), 1, GL_FALSE, glm::value_ptr(data.horizontalRotation));
     glDispatchCompute((data.flowMapSize + 15) / 16, (data.flowMapSize + 7) / 8, 6);
@@ -966,33 +1007,26 @@ void clearFlowMap(Data &data)
 {
     data.flowMapClearShader.bind();
     glBindImageTexture(0, data.flowMap.getRenderID(), 0, GL_TRUE, 0, GL_WRITE_ONLY, GL_RGBA16F);
-    glUniform1i(data.flowMapClearShader.getUniform("u_hdrFlowMap"), data.inputs.hdrFlowmap);
     glDispatchCompute((data.flowMapSize + 15) / 16, (data.flowMapSize + 7) / 8, 6);
     glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT);
 }
 ogl::Cubemap blurFlowmap(Data &data)
 {
-
-    std::array<ogl::Cubemap, 2> pinpong;
-    unsigned currentCubemap = 0;
-    for(size_t i = 0; i < pinpong.size(); ++i)
-    {
-        pinpong[i] = ogl::Cubemap{0};
-        glTextureStorage2D(
-            pinpong[i].getRenderID(),
-            1,
-            GL_RGBA16F,
-            data.flowMapSize,
-            data.flowMapSize
-        );
-    }
+    ogl::Cubemap result{0};
+    glTextureStorage2D(
+        result.getRenderID(),
+        1,
+        GL_RGBA16F,
+        data.flowMapSize,
+        data.flowMapSize
+    );
     
     glCopyImageSubData(
         data.flowMap.getRenderID(),            // src name
         GL_TEXTURE_CUBE_MAP,                   // src target
         0,                                     // src level
         0, 0, 0,                               // src x,y,z
-        pinpong[currentCubemap].getRenderID(), // dst name
+        result.getRenderID(),                  // dst name
         GL_TEXTURE_CUBE_MAP,                   // dst target
         0,                                     // dst level
         0, 0, 0,                               // dst x,y,z
@@ -1003,27 +1037,43 @@ ogl::Cubemap blurFlowmap(Data &data)
 
     data.cubemapBlurShader.bind();
     
-    for(unsigned i = 0; i < data.inputs.blurSteps * 2; ++i)
+    for(unsigned i = 0; i < data.inputs.blurSteps; ++i)
     {
-        glUniform1f(data.cubemapBlurShader.getUniform("u_time"), i + 1);
-        glBindImageTexture(0, pinpong[currentCubemap].getRenderID(),  0, GL_TRUE, 0, GL_READ_ONLY,  GL_RGBA16F);
-        glBindImageTexture(1, pinpong[!currentCubemap].getRenderID(), 0, GL_TRUE, 0, GL_WRITE_ONLY, GL_RGBA16F);
+        glBindImageTexture(0, result.getRenderID(),  0, GL_TRUE, 0, GL_READ_ONLY,  GL_RGBA16F);
         glDispatchCompute((data.flowMapSize + 15) / 16, (data.flowMapSize + 7) / 8, 6);
         glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT);
-
-        currentCubemap = !currentCubemap;
     }
 
-    return pinpong[currentCubemap];
+    return result;
 }
-void save(int type, std::string path, glm::uvec2 size, unsigned numComponents, float const *data)
+void save(int type, std::string path, glm::uvec2 size, unsigned numComponents, bool hdr, float const *inputData)
 {
-    assert(path != "");
+    if(path == "") return;
+
+    float const *data = inputData;
+
+    std::unique_ptr<float[]> mappedData = nullptr;
+    if(!hdr)
+    {
+        mappedData = std::make_unique<float[]>(size.x * size.y * numComponents);
+        for (size_t i = 0; i < size.x * size.y * numComponents; ++i) {
+            mappedData[i] = static_cast<float>(glm::clamp(data[i] / 10.0f * 0.5f + 0.5f, 0.0f, 1.0f));
+        }
+        for (size_t i = 2; i < size.x * size.y * numComponents; i+=4) {
+            mappedData[i] = 0.0f;
+        }
+        for (size_t i = 3; i < size.x * size.y * numComponents; i+=4) {
+            mappedData[i] = 1.0f;
+        }
+        data = mappedData.get();
+    }
+    
+
     std::unique_ptr<unsigned char[]> u8data = nullptr;
     if(type != HDR)
     {
         u8data = std::make_unique<unsigned char[]>(size.x * size.y * numComponents);
-        for (unsigned i = 0; i < size.x * size.y * numComponents; ++i) {
+        for (size_t i = 0; i < size.x * size.y * numComponents; ++i) {
             u8data[i] = static_cast<unsigned char>(glm::clamp(data[i], 0.0f, 1.0f) * 255.0f + 0.5f);
         }
     }
@@ -1042,20 +1092,10 @@ void save(int type, std::string path, glm::uvec2 size, unsigned numComponents, f
         path += ".hdr";
         stbi_write_hdr(path.data(), size.x, size.y, numComponents, data);
         break;
-    case BMP:
-        path += ".bmp";
-        assert(u8data);
-        stbi_write_bmp(path.data(), size.x, size.y, numComponents, u8data.get());
-        break;
     case JPG:
         path += ".jpg";
         assert(u8data);
         stbi_write_jpg(path.data(), size.x, size.y, numComponents, u8data.get(), 80);
-        break;
-    case TGA:
-        path += ".tga";
-        assert(u8data);
-        stbi_write_tga(path.data(), size.x, size.y, numComponents, u8data.get());
         break;
     default:
         assert(false && "unrecognized save type");
@@ -1064,7 +1104,7 @@ void save(int type, std::string path, glm::uvec2 size, unsigned numComponents, f
 }
 void saveUnwrapped(Data &data)
 {
-    assert(data.currentFile != "");
+    assert(data.inputs.currentFIle != "");
     ogl::Cubemap flowMap = blurFlowmap(data);
 
     ogl::Texture unwrappedTexture{GL_NEAREST, GL_NEAREST, GL_CLAMP_TO_EDGE};
@@ -1107,7 +1147,7 @@ void saveUnwrapped(Data &data)
     glGetTextureImage(unwrappedTexture.getRenderID(), 0, GL_RGBA, GL_FLOAT, size.x * size.y * numComponents * sizeof(float), textureData.get());
 
 
-    save(data.inputs.saveType, data.currentFile, size, numComponents, textureData.get());
+    save(data.inputs.saveType, data.inputs.currentFIle, size, numComponents, data.inputs.hdrFlowmap, textureData.get());
 }
 void saveSixImages(Data &data)
 {
@@ -1143,10 +1183,10 @@ void saveSixImages(Data &data)
         glPixelStorei(GL_PACK_ALIGNMENT, 1);
         glGetTextureImage(faceTexture.getRenderID(), 0, GL_RGBA, GL_FLOAT, data.flowMapSize * data.flowMapSize * numComponents * sizeof(float), textureData.get());
 
-        std::string path = data.currentFile;
+        std::string path = data.inputs.currentFIle;
         path = path + '/' + std::string{names[i]};
 
-        save(data.inputs.saveType, path, glm::uvec2{data.flowMapSize, data.flowMapSize}, numComponents, textureData.get());
+        save(data.inputs.saveType, path, glm::uvec2{data.flowMapSize, data.flowMapSize}, numComponents, data.inputs.hdrFlowmap, textureData.get());
     }
 }
 void saveEquirectangular(Data &data)
