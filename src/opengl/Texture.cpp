@@ -1,6 +1,6 @@
 #include "Texture.hpp"
 #include "stb_image.h"
-#include "Bitmap.hpp"
+#include "equirect.hpp"
 #include <stdexcept>
 #include <array>
 #include <random>
@@ -85,94 +85,6 @@ ogl::TextureMS::~TextureMS()
 }
 void ogl::TextureMS::bind(unsigned slot) const noexcept { glActiveTexture(GL_TEXTURE0 + slot); glBindTexture(GL_TEXTURE_2D_MULTISAMPLE, m_renderID); }
 
-glm::vec3 faceCoordsToXYZ(unsigned x, unsigned y, unsigned faceID, unsigned faceSize) 
-{
-    float A = 2.0f * (float) x / faceSize;
-    float B = 2.0f * (float) y / faceSize;
-
-    glm::vec3 res;
-
-    switch (faceID) {
-    case GL_TEXTURE_CUBE_MAP_POSITIVE_X:
-        res = glm::vec3(A - 1.0f, 1.0f, 1.0f - B);
-        break;
-    case GL_TEXTURE_CUBE_MAP_NEGATIVE_X:
-        res = glm::vec3(1.0f - A, -1.0f, 1.0f - B);
-        break;
-    case GL_TEXTURE_CUBE_MAP_POSITIVE_Y:
-        res = glm::vec3(1.0f - B, A - 1.0f, 1.0f);
-        break;
-    case GL_TEXTURE_CUBE_MAP_NEGATIVE_Y:
-        res = glm::vec3(B - 1.0f, A - 1.0f, -1.0f);
-        break;
-    case GL_TEXTURE_CUBE_MAP_POSITIVE_Z:
-        res = glm::vec3(-1.0f, A - 1.0f, 1.0f - B);
-        break;
-    case GL_TEXTURE_CUBE_MAP_NEGATIVE_Z:
-        res = glm::vec3(1.0f, 1.0f - A, 1.0f - B);
-        break;
-     
-    default:
-        assert(0);
-    }
-
-    return res;
-}
-// thanks to https://github.com/emeiri/ogldev/blob/master/Common/cubemap_texture.cpp
-void convertEquirectangularToCubemap(Bitmap<float> const &equir, std::array<Bitmap<float>, NUM_FACES_IN_CUBEMAP> &cubemapBitmaps)
-{
-    unsigned faceSize = glm::ceil(equir.getWidth() / 4.0f);
-
-    for (unsigned i = 0; i < NUM_FACES_IN_CUBEMAP; i++) {
-        cubemapBitmaps[i] = Bitmap{faceSize, faceSize, equir.getNumComponents()};
-    }
-
-    int maxW = equir.getWidth() - 1;
-    int maxH = equir.getHeight() - 1;
-
-    for (unsigned face = 0; face < NUM_FACES_IN_CUBEMAP; face++) {
-        for (unsigned y = 0; y < faceSize; y++) {
-            for (unsigned x = 0; x < faceSize; x++) {
-                glm::vec3 P = faceCoordsToXYZ(x, y, face + GL_TEXTURE_CUBE_MAP_POSITIVE_X, faceSize);
-                float R = sqrtf(P.x * P.x + P.y * P.y);
-                float phi = atan2f(P.y, P.x);
-                float theta = atan2f(P.z, R);
-
-                // Calculate texture coordinates
-                float u = (float)((phi + M_PI) / (2.0f * M_PI));
-                float v = (float((M_PI / 2.0f - theta) / M_PI));
-
-                // Scale texture coordinates by image size
-                float U = u * equir.getWidth();
-                float V = v * equir.getHeight();
-
-                // 4-samples for bilinear interpolation
-                int U1 = glm::clamp<int>(int(floor(U)), 0, maxW);
-                int V1 = glm::clamp<int>(int(floor(V)), 0, maxH);
-                int U2 = glm::clamp<int>(U1 + 1, 0, maxW);
-                int V2 = glm::clamp<int>(V1 + 1, 0, maxH);
-
-                // Calculate the fractional part
-                float s = U - U1;
-                float t = V - V1;
-
-                // Fetch 4-samples
-                glm::vec4 BottomLeft  = equir.getPixel(U1, V1);
-                glm::vec4 BottomRight = equir.getPixel(U2, V1);
-                glm::vec4 TopLeft     = equir.getPixel(U1, V2);
-                glm::vec4 TopRight    = equir.getPixel(U2, V2);
-
-                // Bilinear interpolation
-                glm::vec4 color = BottomLeft * (1 - s) * (1 - t) + 
-                                  BottomRight * (s) * (1 - t) + 
-                                  TopLeft * (1 - s) * t + 
-                                  TopRight * (s) * (t);
-
-                cubemapBitmaps[face].setPixel(x, y, color);
-            }   // j loop
-        }   // i loop
-    }   // Face loop
-}
 ogl::Cubemap::Cubemap(std::filesystem::path const &filepath, bool flip)
 {
     int width, height, numChannels;
@@ -184,10 +96,8 @@ ogl::Cubemap::Cubemap(std::filesystem::path const &filepath, bool flip)
 
     Bitmap<float> const bitmapImage{static_cast<unsigned>(width), static_cast<unsigned>(height), static_cast<unsigned>(numChannels), image};
     stbi_image_free(image);
-    std::array<Bitmap<float>, NUM_FACES_IN_CUBEMAP> cubemapBitmaps{};
-    convertEquirectangularToCubemap(bitmapImage, cubemapBitmaps);
+    std::array<Bitmap<float>, NUM_FACES_IN_CUBEMAP> cubemapBitmaps = eqr::toCubemap(bitmapImage);
 
-    // a bit of DSA
     glCreateTextures(GL_TEXTURE_CUBE_MAP, 1, &m_renderID);
     glTextureParameteri(m_renderID, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
     glTextureParameteri(m_renderID, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);

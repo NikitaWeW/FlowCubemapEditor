@@ -9,7 +9,7 @@ in VS_OUT {
 layout (binding = 0) uniform samplerCube u_flowMap;
 layout (binding = 1) uniform sampler2D u_texture;
 uniform bool u_showFlow;
-uniform bool u_blur = true;
+uniform bool u_blurPreview = true;
 uniform float u_time;
 
 const float flowIntencity = 0.05;
@@ -38,7 +38,7 @@ vec4 textureBlurred(samplerCube cube, vec3 dir, float diskRadius)
 void main() 
 {
     vec2 flow;
-    if(u_blur)
+    if(u_blurPreview)
         flow = textureBlurred(u_flowMap, fs_in.fragPos, 0.04).rg;
     else 
         flow = texture(u_flowMap, fs_in.fragPos).rg;

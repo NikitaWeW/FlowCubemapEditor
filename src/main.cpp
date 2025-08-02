@@ -46,6 +46,8 @@ THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLI
 #include "stb_image.h"
 #include "stb_image_write.h"
 #include "logger.h"
+#include "Bitmap.hpp"
+#include "equirect.hpp"
 #include "tiny_obj_loader.h"
 #include "ease_functions.hpp"
 
@@ -54,7 +56,6 @@ THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLI
 #include "opengl/IndexBuffer.hpp"
 #include "opengl/VertexBuffer.hpp"
 #include "opengl/Shader.hpp"
-#include "opengl/Bitmap.hpp"
 
 #include <chrono>
 #include <memory>
@@ -130,13 +131,14 @@ struct Data
     struct Inputs {
         int saveType = PNG;
         int saveLayout = UNWRAPPED;
+        int showFlow = false;
+        bool blurPreview = true;
         bool eraseMode;
+        bool hdrFlowmap = true;
         float sensitivity = 1;
         float brushSize = 0.1;
-        int showFlow = false;
-        bool hdrFlowmap = true;
-        unsigned blurSteps = 4;
-        std::string currentFile = "flowmap";
+        unsigned blurSteps = 16;
+        std::string path = "flowmap";
     } inputs;
 
 };
@@ -154,7 +156,8 @@ bool init(GLFWwindow **window);
 Mesh loadMesh(std::string_view path);
 void processInput(Data &data);
 void scroll_callback(GLFWwindow* window, double xoffset, double yoffset);
-void helpMarker(const char* desc);
+void key_callback(GLFWwindow *window, int key, int scancode, int action, int mods);
+void helpMarker(const char *desc);
 void clearFlowMap(Data &data);
 void saveUnwrapped(Data &data);
 void saveSixImages(Data &data);
@@ -220,6 +223,7 @@ int main(int argc, char **argv)
     
     glfwSetWindowUserPointer(data.window, &data);
     glfwSetScrollCallback(data.window, scroll_callback);
+    glfwSetKeyCallback(data.window, key_callback);
 
     glEnable(GL_BLEND);
     glEnable(GL_DEPTH_TEST);
@@ -271,7 +275,6 @@ int main(int argc, char **argv)
         }
         processInput(data);
 
-        // __________________________
         // ==========================
 
         mainFBO.bind();
@@ -327,6 +330,7 @@ int main(int argc, char **argv)
         flowTexture.bind(1);
         
         glUniform1i(       cubeShader.getUniform("u_showFlow"),       data.inputs.showFlow);
+        glUniform1i(       cubeShader.getUniform("u_blurPreview"),    data.inputs.blurPreview);
         glUniform1f(       cubeShader.getUniform("u_time"),           glfwGetTime());
         glUniformMatrix4fv(cubeShader.getUniform("u_modelMat"),       1, GL_FALSE, glm::value_ptr(glm::mat4{1.0f}));
         glUniformMatrix4fv(cubeShader.getUniform("u_viewMat"),        1, GL_FALSE, glm::value_ptr(data.viewMat));
@@ -378,6 +382,9 @@ int main(int argc, char **argv)
         ImGui::RadioButton("Flow", &data.inputs.showFlow, 1); ImGui::SameLine();
         ImGui::RadioButton("Water", &data.inputs.showFlow, 0);
 
+        ImGui::Checkbox("Blur Preview", &data.inputs.blurPreview);
+        helpMarker("Does not affect final result");
+
         ImGui::Separator();
 
         if(ImGui::Button("Clear")) 
@@ -388,7 +395,7 @@ int main(int argc, char **argv)
             ImGui::OpenPopup("Load flowmap");
 
         if(ImGui::Button("Save")) {
-            if(data.inputs.currentFile == "")
+            if(data.inputs.path == "")
                 ImGui::OpenPopup("Save As");
             else
             {
@@ -452,11 +459,11 @@ int main(int argc, char **argv)
             ImGui::Separator();
 
             if(data.inputs.saveLayout == SIX_IMAGES)
-                ImGui::InputText("path (directory)", &data.inputs.currentFile);
+                ImGui::InputText("path (directory)", &data.inputs.path);
             else
-                ImGui::InputText("path (no extension)", &data.inputs.currentFile);
+                ImGui::InputText("path (no extension)", &data.inputs.path);
 
-            if(data.inputs.currentFile != "")
+            if(data.inputs.path != "")
             {
                 if(ImGui::Button("Save", ImVec2(120, 0))) { 
                     switch (data.inputs.saveLayout)
@@ -497,11 +504,11 @@ int main(int argc, char **argv)
             ImGui::Separator();
 
             if(data.inputs.saveLayout == SIX_IMAGES)
-                ImGui::InputText("path (directory)", &data.inputs.currentFile);
+                ImGui::InputText("path (directory)", &data.inputs.path);
             else
-                ImGui::InputText("path (no extension)", &data.inputs.currentFile);
+                ImGui::InputText("path (no extension)", &data.inputs.path);
 
-            if(data.inputs.currentFile != "")
+            if(data.inputs.path != "")
             {
                 if(ImGui::Button("Load", ImVec2(120, 0))) { 
                     switch (data.inputs.saveLayout)
@@ -967,9 +974,13 @@ void processInput(Data &data)
     data.deltaMouse /= glm::max<float>(data.windowSize.x, data.windowSize.y) / 1000.0f;
     data.prevMousePos = data.mousePos;
 
+    if((glfwGetKey(data.window, GLFW_KEY_LEFT)  == GLFW_PRESS) && !ImGui::IsWindowFocused()) data.yawPitch.velocity.x += data.deltatime * data.inputs.sensitivity * 400.0f;
+    if((glfwGetKey(data.window, GLFW_KEY_RIGHT) == GLFW_PRESS) && !ImGui::IsWindowFocused()) data.yawPitch.velocity.x -= data.deltatime * data.inputs.sensitivity * 400.0f;
+    if((glfwGetKey(data.window, GLFW_KEY_UP)    == GLFW_PRESS) && !ImGui::IsWindowFocused()) data.yawPitch.velocity.y += data.deltatime * data.inputs.sensitivity * 400.0f;
+    if((glfwGetKey(data.window, GLFW_KEY_DOWN)  == GLFW_PRESS) && !ImGui::IsWindowFocused()) data.yawPitch.velocity.y -= data.deltatime * data.inputs.sensitivity * 400.0f;
     if(cameraLocked && !ImGui::IsWindowFocused()) 
     {
-        data.yawPitch.velocity += glm::vec2{data.deltaMouse.x, -data.deltaMouse.y} * data.deltatime * data.inputs.sensitivity * 500.0f;
+        data.yawPitch.velocity += glm::vec2{data.deltaMouse.x, -data.deltaMouse.y} * data.deltatime * data.inputs.sensitivity * 400.0f;
     }
 
     updateVP(data, cameraLocked);
@@ -992,6 +1003,15 @@ void scroll_callback(GLFWwindow* window, double xoffset, double yoffset)
         ImGui_ImplGlfw_ScrollCallback(window, xoffset, yoffset);
     } else {
         data.distance.velocity -= yoffset * data.deltatime * data.inputs.sensitivity * 500.0f;
+    }
+    ImGui::End();
+}
+void key_callback(GLFWwindow* window, int key, int scancode, int action, int mods)
+{
+    ImGui::Begin(CONFIG_WINDOW_NAME.data(), nullptr, ImGuiWindowFlags_MenuBar);
+    if(ImGui::IsWindowFocused()) {
+        ImGui_ImplGlfw_KeyCallback(window, key, scancode, action, mods);
+    } else {
     }
     ImGui::End();
 }
@@ -1051,6 +1071,11 @@ ogl::Cubemap blurFlowmap(Data &data)
     return result;
 }
 
+// 	+----+----+----+
+// 	| X+ | Y+ | Z+ |
+// 	+----+----+----+
+// 	| X- | Y- | Z- |
+// 	+----+----+----+
 constexpr std::array<glm::uvec2, 6> cells = {
     glm::uvec2{ 0, 0 },
     glm::uvec2{ 0, 1 }, 
@@ -1063,6 +1088,8 @@ constexpr std::array<std::string_view, 6> names = {
     "pos_x", "neg_x", "pos_y", "neg_y", "pos_z", "neg_z" 
 };
 constexpr float LDR_SCALE = 10.0f;
+using image_ptr = std::unique_ptr<float, decltype(&stbi_image_free)>;
+constexpr auto NUM_CUBEMAP_FACES = eqr::NUM_CUBEMAP_FACES;
 
 void save(int type, std::string path, glm::uvec2 size, unsigned numComponents, bool hdr, float *inputData)
 {
@@ -1134,7 +1161,7 @@ void save(int type, std::string path, glm::uvec2 size, unsigned numComponents, b
 }
 void saveUnwrapped(Data &data)
 {
-    assert(data.inputs.currentFile != "");
+    assert(data.inputs.path != "");
     ogl::Cubemap flowMap = blurFlowmap(data);
 
     ogl::Texture unwrappedTexture{GL_NEAREST, GL_NEAREST, GL_CLAMP_TO_EDGE};
@@ -1144,7 +1171,7 @@ void saveUnwrapped(Data &data)
 
     glTextureStorage2D(unwrappedTexture.getRenderID(), 1, GL_RGBA32F, size.x, size.y);
 
-    for(int i = 0; i < 6; ++i){
+    for(int i = 0; i < NUM_CUBEMAP_FACES; ++i){
         glm::uvec2 pos = cells[i] * data.flowMapSize;
         glCopyImageSubData(
             flowMap.getRenderID(),          // src name
@@ -1168,7 +1195,7 @@ void saveUnwrapped(Data &data)
     glGetTextureImage(unwrappedTexture.getRenderID(), 0, GL_RGBA, GL_FLOAT, size.x * size.y * numComponents * sizeof(float), textureData.get());
 
 
-    save(data.inputs.saveType, data.inputs.currentFile, size, numComponents, data.inputs.hdrFlowmap, textureData.get());
+    save(data.inputs.saveType, data.inputs.path, size, numComponents, data.inputs.hdrFlowmap, textureData.get());
 }
 void saveSixImages(Data &data)
 {
@@ -1176,7 +1203,7 @@ void saveSixImages(Data &data)
 
     int const numComponents = 4;
 
-    for(int i = 0; i < 6; ++i){
+    for(int i = 0; i < NUM_CUBEMAP_FACES; ++i){
         ogl::Texture faceTexture{GL_NEAREST, GL_NEAREST, GL_CLAMP_TO_EDGE};
         glTextureStorage2D(faceTexture.getRenderID(), 1, GL_RGBA32F, data.flowMapSize, data.flowMapSize);
 
@@ -1200,7 +1227,7 @@ void saveSixImages(Data &data)
         glPixelStorei(GL_PACK_ALIGNMENT, 1);
         glGetTextureImage(faceTexture.getRenderID(), 0, GL_RGBA, GL_FLOAT, data.flowMapSize * data.flowMapSize * numComponents * sizeof(float), textureData.get());
 
-        std::string path = data.inputs.currentFile;
+        std::string path = data.inputs.path;
         path = path + '/' + std::string{names[i]};
 
         save(data.inputs.saveType, path, glm::uvec2{data.flowMapSize, data.flowMapSize}, numComponents, data.inputs.hdrFlowmap, textureData.get());
@@ -1208,9 +1235,41 @@ void saveSixImages(Data &data)
 }
 void saveEquirectangular(Data &data)
 {
-    assert(false && "not implemented"); // TODO
+    ogl::Cubemap flowMap = blurFlowmap(data);
+
+    int const numComponents = 4;
+
+    std::array<Bitmap<float>, eqr::NUM_CUBEMAP_FACES> cubemapFaces;
+
+    for(int i = 0; i < NUM_CUBEMAP_FACES; ++i){
+        ogl::Texture faceTexture{GL_NEAREST, GL_NEAREST, GL_CLAMP_TO_EDGE};
+        glTextureStorage2D(faceTexture.getRenderID(), 1, GL_RGBA32F, data.flowMapSize, data.flowMapSize);
+
+        glCopyImageSubData(
+            flowMap.getRenderID(),          // src name
+            GL_TEXTURE_CUBE_MAP,            // src target
+            0,                              // src level
+            0, 0, i,                        // src x,y,z
+            faceTexture.getRenderID(),      // dst name
+            GL_TEXTURE_2D,                  // dst target
+            0,                              // dst level
+            0, 0, 0,                        // dst x,y,z
+            data.flowMapSize,               // width
+            data.flowMapSize,               // height
+            1                               // depth
+        );
+
+        cubemapFaces[i] = Bitmap{data.flowMapSize, data.flowMapSize, 4};
+
+        // FIXME: pbo maybe?
+        glPixelStorei(GL_PACK_ALIGNMENT, 1);
+        glGetTextureImage(faceTexture.getRenderID(), 0, GL_RGBA, GL_FLOAT, data.flowMapSize * data.flowMapSize * numComponents * sizeof(float), cubemapFaces[i].getData());
+    }
+    Bitmap<float> equirectangularImage = eqr::fromCubemap(cubemapFaces);
+
+    save(data.inputs.saveType, data.inputs.path, glm::uvec2{equirectangularImage.getWidth(), equirectangularImage.getHeight()}, numComponents, data.inputs.hdrFlowmap, equirectangularImage.getData());
 }
-ogl::Texture load(std::string path, int type, bool hdr, glm::ivec2 &size)
+image_ptr loadImageData(std::string path, int type, bool hdr, glm::ivec2 &size)
 {
     switch(type)
     {
@@ -1226,13 +1285,14 @@ ogl::Texture load(std::string path, int type, bool hdr, glm::ivec2 &size)
     size = glm::ivec2{0};
     stbi_ldr_to_hdr_gamma(1.0f);
     stbi_hdr_to_ldr_gamma(1.0f);
-    float *buffer = stbi_loadf(path.c_str(), &size.x, &size.y, &numChannels, 4);
+    image_ptr data{stbi_loadf(path.c_str(), &size.x, &size.y, &numChannels, 4), &stbi_image_free}; 
+    float *buffer = data.get();
     stbi_ldr_to_hdr_gamma(2.2f);
     stbi_hdr_to_ldr_gamma(2.2f);
     if(!buffer || !size.x || !size.y) 
     {
         LOG_ERROR("failed to load \"%s\": %s", path.c_str(), stbi_failure_reason());
-        return ogl::Texture{};
+        return image_ptr{nullptr, &stbi_image_free};
     }
 
     
@@ -1260,10 +1320,20 @@ ogl::Texture load(std::string path, int type, bool hdr, glm::ivec2 &size)
         }
     }
 
+    return data;
+}
+ogl::Texture load(std::string path, int type, bool hdr, glm::ivec2 &size)
+{
+    auto data = loadImageData(path, type, hdr, size);
+
+    if(!data.get())
+    {
+        return ogl::Texture{};
+    }
+
     ogl::Texture texture{GL_NEAREST, GL_NEAREST, GL_CLAMP_TO_EDGE};
     texture.bind();
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA32F, size.x, size.y, 0, GL_RGBA, GL_FLOAT, buffer);
-    stbi_image_free(buffer);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA32F, size.x, size.y, 0, GL_RGBA, GL_FLOAT, data.get());
 
     return texture;
 }
@@ -1271,17 +1341,18 @@ void loadUnwrapped(Data &data)
 {
     glm::ivec2 size;
 
-    ogl::Texture unwrappedTexture = load(data.inputs.currentFile, data.inputs.saveType, data.inputs.hdrFlowmap, size);
+    ogl::Texture unwrappedTexture = load(data.inputs.path, data.inputs.saveType, data.inputs.hdrFlowmap, size);
+    if(unwrappedTexture.getRenderID() == 0) return;
     
     if(size.x * 2 != size.y * 3)
     {
-        LOG_ERROR("wrong layout to load! (expected 3x*2x, got %i*%i) \"%s\"", size.x, size.y, data.inputs.currentFile.c_str());
+        LOG_ERROR("wrong layout to load! (expected 3x*2x, got %i*%i) \"%s\"", size.x, size.y, data.inputs.path.c_str());
         return;
     }
     
     data.flowMapSize = size.y / 2;
     
-    for(int i = 0; i < 6; ++i){
+    for(int i = 0; i < NUM_CUBEMAP_FACES; ++i){
         glm::uvec2 pos = cells[i] * data.flowMapSize;
         glCopyImageSubData(
             unwrappedTexture.getRenderID(), // src name
@@ -1299,17 +1370,19 @@ void loadUnwrapped(Data &data)
     }
 }
 void loadSixImages(Data &data)
-{
-    
-    for(int i = 0; i < 6; ++i){
-        std::string path = data.inputs.currentFile;
+{ // FIXME: image is rotated on load???
+    for(int i = 0; i < NUM_CUBEMAP_FACES; ++i){
+        std::string path = data.inputs.path;
         path = path + '/' + std::string{names[i]};
 
         glm::ivec2 size;
         ogl::Texture texture = load(path, data.inputs.saveType, data.inputs.hdrFlowmap, size);
+        if(texture.getRenderID() == 0) return;
+
         if(size.x != size.y)
         {
             LOG_ERROR("image \"%s\" is not square!", path.c_str());
+            return;
         }
         data.flowMapSize = size.x;
         
@@ -1330,5 +1403,32 @@ void loadSixImages(Data &data)
 }
 void loadEquirectangular(Data &data)
 {
-    assert(false && "not implemented"); // TODO
+    glm::ivec2 size;
+    auto imageData = loadImageData(data.inputs.path, data.inputs.saveType, data.inputs.hdrFlowmap, size);
+    if(!imageData.get()) return;
+
+    if(size.x != 2 * size.y)
+    {
+        LOG_ERROR("image \"%s\" is not 2x1!", data.inputs.path.c_str());
+        return;
+    }
+    data.flowMapSize = size.y / 2;
+
+    Bitmap<float> equirectangularImage{static_cast<unsigned>(size.x), static_cast<unsigned>(size.y), 4, imageData.get()};
+
+    std::array<Bitmap<float>, eqr::NUM_CUBEMAP_FACES> cubemapFaces = eqr::toCubemap(equirectangularImage);
+
+    for(int i = 0; i < NUM_CUBEMAP_FACES; ++i){
+        const void* sourceImage = cubemapFaces[i].getData();
+        glTextureSubImage3D(
+            data.flowMap.getRenderID(), 
+            0,       // layer
+            0, 0, i, // x,y,z
+            cubemapFaces[0].getWidth(), cubemapFaces[0].getHeight(), // 2D image dimensions
+            1,          // depth
+            GL_RGBA,    // format
+            GL_FLOAT,   // data type
+            sourceImage
+        );
+    }
 }
