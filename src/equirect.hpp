@@ -39,7 +39,7 @@ namespace eqr
     };
 
     inline uvFace getUVface(glm::vec3 dir)
-    {
+    { // dunno why i had to invert some directions, probably because of that coordinate system from faceCoordsToXYZ.
         glm::vec3 adir = glm::abs(dir);
 
         if (adir.x >= adir.y && adir.x >= adir.z)
@@ -48,7 +48,7 @@ namespace eqr
             if (dir.x > 0.0f)
             {
                 return uvFace {
-                    POS_X,
+                    NEG_Z,
                     {
                         (-dir.z / adir.x + 1.0f) * 0.5f,
                         (-dir.y / adir.x + 1.0f) * 0.5f
@@ -58,7 +58,7 @@ namespace eqr
             else
             {
                 return uvFace {
-                    NEG_X,
+                    POS_Z,
                     {
                         ( dir.z / adir.x + 1.0f) * 0.5f,
                         (-dir.y / adir.x + 1.0f) * 0.5f
@@ -74,8 +74,8 @@ namespace eqr
                 return uvFace {
                     POS_Y,
                     {
-                        ( dir.x / adir.y + 1.0f) * 0.5f,
-                        ( dir.z / adir.y + 1.0f) * 0.5f
+                        ( dir.y / adir.y + 1.0f) * 0.5f,
+                        ( 1.0f - dir.x / adir.y) * 0.5f
                     }
                 };
             }
@@ -85,7 +85,7 @@ namespace eqr
                     NEG_Y,
                     {
                         ( dir.x / adir.y + 1.0f) * 0.5f,
-                        (-dir.z / adir.y + 1.0f) * 0.5f
+                        ( dir.y / adir.y + 1.0f) * 0.5f
                     }
                 };
             }
@@ -96,7 +96,7 @@ namespace eqr
             if (dir.z > 0.0f)
             {
                 return uvFace {
-                    POS_Z,
+                    POS_X,
                     {
                         ( dir.x / adir.z + 1.0f) * 0.5f,
                         (-dir.y / adir.z + 1.0f) * 0.5f
@@ -106,7 +106,7 @@ namespace eqr
             else
             {
                 return uvFace {
-                    NEG_Z,
+                    NEG_X,
                     {
                         (-dir.x / adir.z + 1.0f) * 0.5f,
                         (-dir.y / adir.z + 1.0f) * 0.5f

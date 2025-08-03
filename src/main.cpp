@@ -139,7 +139,7 @@ struct Data
         bool hdrFlowmap = true;
         float sensitivity = 1;
         float brushSize = 0.1;
-        unsigned blurSteps = 16;
+        unsigned blurSteps = 100;
         std::string path = "flowmap";
     } inputs;
     
@@ -477,8 +477,8 @@ int main(int argc, char **argv)
             ImGui::Combo("layout", &data.inputs.saveLayout, "unwrapped cube\0six images\0equirectangular\0");
             ImGui::Combo("type", &data.inputs.saveType, "png\0hdr\0");
 
-            static int intHackBlurSteps = 16;
-            ImGui::InputInt("Blur steps", &intHackBlurSteps, 1, 2);
+            static int intHackBlurSteps = data.inputs.blurSteps;
+            ImGui::InputInt("Blur steps", &intHackBlurSteps, 1, 10);
             helpMarker("Controls the smoothness of strokes.");
             intHackBlurSteps = glm::max(intHackBlurSteps, 0);
             data.inputs.blurSteps = static_cast<unsigned>(intHackBlurSteps);
@@ -565,7 +565,7 @@ int main(int argc, char **argv)
 
             ImGui::EndPopup();
         }
-        if(ImGui::BeginPopupModal("Message", NULL, ImGuiWindowFlags_AlwaysAutoResize))
+        if(ImGui::BeginPopup("Message", ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_AlwaysUseWindowPadding))
         {
             ImGui::Text(data.messages.front().str().c_str());
 
@@ -1176,7 +1176,9 @@ void save(int type, std::string path, glm::uvec2 size, unsigned numComponents, b
     }
 
     std::replace(path.begin(), path.end(), '\\', '/');
-    std::filesystem::create_directories(path.substr(0, path.find_last_of('/')));
+    size_t pos = path.find_last_of('/');
+    if(pos != std::string::npos)
+        std::filesystem::create_directories(path.substr(0, pos));
     
     switch (type)
     {
