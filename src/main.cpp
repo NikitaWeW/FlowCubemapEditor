@@ -45,7 +45,7 @@ THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLI
 
 #include "stb_image.h"
 #include "stb_image_write.h"
-#include "logger.h"
+// #include "logger.h"
 #include "Bitmap.hpp"
 #include "equirect.hpp"
 #include "tiny_obj_loader.h"
@@ -63,6 +63,8 @@ THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLI
 #include <iostream>
 #include <stdexcept>
 #include <algorithm>
+#include <sstream>
+#include <queue>
 
 struct Mesh
 {
@@ -140,7 +142,28 @@ struct Data
         unsigned blurSteps = 16;
         std::string path = "flowmap";
     } inputs;
+    
+    std::queue<std::stringstream> messages;
+};
+class MessageStream : public std::stringstream
+{
+private:
+    Data *m_data = nullptr;
+public:
+    inline ~MessageStream()
+    {
+        if(m_data)
+        {
+            if(rdbuf()->in_avail())
+                m_data->messages.push(std::move(*this));
+        }
+        else
+        {
+            std::cout << "data not set in MessageStream!\n";
+        }
+    }
 
+    inline void setData(Data &data) { m_data = &data; }
 };
 
 constexpr unsigned NUM_SAMPLES = 4;
@@ -170,13 +193,14 @@ int main(int argc, char **argv)
 {
     GLFWwindow *window = nullptr;
     if(!init(&window)) {
-        LOG_FATAL("failed to init!");
+        std::cout << "failed to init!\n";
         return -1;
     }
     assert(window);
 
     // ===================================
     Data data{};
+    data.messages.push(std::stringstream{} << "hello!");
 
     ogl::Cubemap skybox{"res/textures/qwantani_dawn_puresky_4k.hdr"};
     ogl::Texture flowTexture{"res/textures/water.jpg"};
@@ -367,7 +391,7 @@ int main(int argc, char **argv)
         // ImGui stuff 
         // ============
         
-        ImGui::Begin(CONFIG_WINDOW_NAME.data(), nullptr, ImGuiWindowFlags_MenuBar);
+        ImGui::Begin(CONFIG_WINDOW_NAME.data(), nullptr);
 
         ImGui::DragFloat("Sensitivity", &data.inputs.sensitivity, 0.01, 0.01, 100);
         ImGui::SliderFloat("Brush Size", &data.inputs.brushSize, 0.01, 0.5w);
@@ -420,6 +444,9 @@ int main(int argc, char **argv)
         if(ImGui::Button("Save As.."))
             ImGui::OpenPopup("Save As");
 
+        if(!data.messages.empty())
+            ImGui::OpenPopup("Message");
+        
         if(ImGui::BeginPopupModal("Clear?", NULL, ImGuiWindowFlags_AlwaysAutoResize))
         {
             ImGui::Text("You need to clear after changing hdr option.\nYour current drawing will be cleared.\nThis operation cannot be undone!");
@@ -534,6 +561,24 @@ int main(int argc, char **argv)
             ImGui::SetItemDefaultFocus();
             if(ImGui::Button("Cancel", ImVec2(120, 0))) { 
                 ImGui::CloseCurrentPopup(); 
+            }
+
+            ImGui::EndPopup();
+        }
+        if(ImGui::BeginPopupModal("Message", NULL, ImGuiWindowFlags_AlwaysAutoResize))
+        {
+            ImGui::Text(data.messages.front().str().c_str());
+
+            ImGui::Separator();
+
+            if((data.messages.size() == 1) && ImGui::Button("Ok", ImVec2(120, 0)))
+            {
+                data.messages.pop();
+                ImGui::CloseCurrentPopup(); 
+            }
+            if((data.messages.size() > 1) && ImGui::Button("Next", ImVec2(120, 0)))
+            {
+                data.messages.pop();
             }
 
             ImGui::EndPopup();
@@ -658,12 +703,7 @@ void APIENTRY debugCallback(GLenum source, GLenum type, GLuint id, GLenum severi
         break;
     }
 
-    LOG_WARN("%d: opengl %s severity %s, raised from %s:\n\t%s", 
-            error.id, 
-            error.severity.c_str(), 
-            error.type.c_str(), 
-            error.source.c_str(), 
-            error.msg.c_str());
+    std::cout << error.id << ": opengl" << error.severity << "severity " << error.type << ", raised from " << error.source << ":\n\t" << error.msg << '\n';
 }
 void resizeColorAttachment(ogl::Framebuffer &fbo, ogl::TextureMS &texture, glm::ivec2 size, GLenum attachment)
 {
@@ -692,7 +732,7 @@ void resizeColorAttachment(ogl::Framebuffer &fbo, ogl::Texture &texture, glm::iv
 bool init(GLFWwindow **window)
 {
     if(!glfwInit()) {
-        LOG_FATAL("failed to initialize glfw!");
+        std::cout << "failed to initialize glfw!\n";
         return false;
     }
     glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 4);
@@ -705,15 +745,15 @@ bool init(GLFWwindow **window)
 
     GLFWvidmode const *mode = glfwGetVideoMode(glfwGetPrimaryMonitor());
     *window = glfwCreateWindow(mode->width * 0.5, mode->height * 0.5, "opengl", nullptr, nullptr);
-    glfwSetWindowTitle(*window, "flow cubemap editor v0.0 (still broken)");
+    glfwSetWindowTitle(*window, "flow cubemap editor v0.5");
 
     if(!*window) {
-        LOG_FATAL("failed to initialize window.");
+        std::cout << "failed to initialize window!\n";
         return false;
     }
     glfwMakeContextCurrent(*window);
     if(!gladLoadGL((GLADloadfunc) glfwGetProcAddress)) {
-        LOG_FATAL("gladLoadGL: Failed to initialize GLAD!");
+        std::cout << "gladLoadGL: Failed to initialize GLAD!\n";
         return false;
     }
     
@@ -724,7 +764,7 @@ bool init(GLFWwindow **window)
     io.ConfigFlags |= ImGuiConfigFlags_NavEnableGamepad;
     io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;
     if(getenv("WAYLAND_DISPLAY")) 
-        LOG_INFO("wayland detected! imgui multiple viewports feature is not supported!");
+        std::cout << "wayland detected! imgui multiple viewports feature is not supported!\n";
     else 
         io.ConfigFlags |= ImGuiConfigFlags_ViewportsEnable;
     ImGui_ImplGlfw_InitForOpenGL(*window, true);
@@ -732,7 +772,6 @@ bool init(GLFWwindow **window)
     ImGui::StyleColorsDark();
     glEnable(GL_DEBUG_OUTPUT);
     glDebugMessageCallback(debugCallback, nullptr);
-    LOG_DEBUG("running in debug mode!");
     
     glfwSwapInterval(0);
 
@@ -745,9 +784,9 @@ Mesh loadMesh(std::string_view path)
     tinyobj::ObjReader reader;
 
     if(!reader.ParseFromFile(std::string{path}, config)) {
-        LOG_ERROR("failed to load \"%s\"!", path.data());
+        std::cout << "failed to load \"" << path << "\"\n";
         if(!reader.Error().empty()) {
-            LOG_ERROR(reader.Error().c_str());
+            std::cout << reader.Error() << '\n';
         }
         return Mesh{
             .count = 0
@@ -755,7 +794,7 @@ Mesh loadMesh(std::string_view path)
     }
 
     if(!reader.Warning().empty()) {
-        LOG_WARN(reader.Warning().c_str());
+        std::cout << reader.Warning().c_str();
     }
 
     auto &attrib = reader.GetAttrib();
@@ -963,7 +1002,6 @@ void processInput(Data &data)
 {
     assert(data.window);
 
-        ImGui::Begin(CONFIG_WINDOW_NAME.data(), nullptr, ImGuiWindowFlags_MenuBar);
     bool cameraLocked = glfwGetMouseButton(data.window, GLFW_MOUSE_BUTTON_RIGHT) == GLFW_PRESS;
     glfwSetInputMode(data.window, GLFW_CURSOR, cameraLocked ? GLFW_CURSOR_CAPTURED : GLFW_CURSOR_NORMAL);
     
@@ -974,18 +1012,20 @@ void processInput(Data &data)
     data.deltaMouse /= glm::max<float>(data.windowSize.x, data.windowSize.y) / 1000.0f;
     data.prevMousePos = data.mousePos;
 
-    if((glfwGetKey(data.window, GLFW_KEY_LEFT)  == GLFW_PRESS) && !ImGui::IsWindowFocused()) data.yawPitch.velocity.x += data.deltatime * data.inputs.sensitivity * 400.0f;
-    if((glfwGetKey(data.window, GLFW_KEY_RIGHT) == GLFW_PRESS) && !ImGui::IsWindowFocused()) data.yawPitch.velocity.x -= data.deltatime * data.inputs.sensitivity * 400.0f;
-    if((glfwGetKey(data.window, GLFW_KEY_UP)    == GLFW_PRESS) && !ImGui::IsWindowFocused()) data.yawPitch.velocity.y += data.deltatime * data.inputs.sensitivity * 400.0f;
-    if((glfwGetKey(data.window, GLFW_KEY_DOWN)  == GLFW_PRESS) && !ImGui::IsWindowFocused()) data.yawPitch.velocity.y -= data.deltatime * data.inputs.sensitivity * 400.0f;
-    if(cameraLocked && !ImGui::IsWindowFocused()) 
+    bool focused = ImGui::IsWindowFocused(ImGuiFocusedFlags_AnyWindow);
+
+    if((glfwGetKey(data.window, GLFW_KEY_LEFT)  == GLFW_PRESS) && !focused) data.yawPitch.velocity.x += data.deltatime * data.inputs.sensitivity * 400.0f;
+    if((glfwGetKey(data.window, GLFW_KEY_RIGHT) == GLFW_PRESS) && !focused) data.yawPitch.velocity.x -= data.deltatime * data.inputs.sensitivity * 400.0f;
+    if((glfwGetKey(data.window, GLFW_KEY_UP)    == GLFW_PRESS) && !focused) data.yawPitch.velocity.y += data.deltatime * data.inputs.sensitivity * 400.0f;
+    if((glfwGetKey(data.window, GLFW_KEY_DOWN)  == GLFW_PRESS) && !focused) data.yawPitch.velocity.y -= data.deltatime * data.inputs.sensitivity * 400.0f;
+    if(cameraLocked && !focused) 
     {
         data.yawPitch.velocity += glm::vec2{data.deltaMouse.x, -data.deltaMouse.y} * data.deltatime * data.inputs.sensitivity * 400.0f;
     }
 
     updateVP(data, cameraLocked);
     
-    if(glfwGetMouseButton(data.window, GLFW_MOUSE_BUTTON_LEFT) && !cameraLocked && (data.deltaMouse != glm::vec2{0}) && !ImGui::IsWindowFocused())
+    if(glfwGetMouseButton(data.window, GLFW_MOUSE_BUTTON_LEFT) && !cameraLocked && (data.deltaMouse != glm::vec2{0}) && !focused)
     {
         drawStroke(data);
     }
@@ -993,27 +1033,22 @@ void processInput(Data &data)
     {
         data.prevIntersectionPoint = glm::vec3{0};
     }
-    ImGui::End();
 }
 void scroll_callback(GLFWwindow* window, double xoffset, double yoffset)
 {
     Data &data = *static_cast<Data *>(glfwGetWindowUserPointer(window));
-        ImGui::Begin(CONFIG_WINDOW_NAME.data(), nullptr, ImGuiWindowFlags_MenuBar);
     if(ImGui::IsWindowFocused()) {
         ImGui_ImplGlfw_ScrollCallback(window, xoffset, yoffset);
     } else {
         data.distance.velocity -= yoffset * data.deltatime * data.inputs.sensitivity * 500.0f;
     }
-    ImGui::End();
 }
 void key_callback(GLFWwindow* window, int key, int scancode, int action, int mods)
 {
-    ImGui::Begin(CONFIG_WINDOW_NAME.data(), nullptr, ImGuiWindowFlags_MenuBar);
-    if(ImGui::IsWindowFocused()) {
+    if(ImGui::IsWindowFocused(ImGuiFocusedFlags_AnyWindow)) {
         ImGui_ImplGlfw_KeyCallback(window, key, scancode, action, mods);
     } else {
     }
-    ImGui::End();
 }
 void helpMarker(const char* desc)
 {
@@ -1095,7 +1130,7 @@ void save(int type, std::string path, glm::uvec2 size, unsigned numComponents, b
 {
     if(path == "") 
     {
-        LOG_ERROR("path is empty, nothing to save!");
+        std::cout << "path is empty, nothing to save!\n";
         return;
     }
 
@@ -1269,7 +1304,7 @@ void saveEquirectangular(Data &data)
 
     save(data.inputs.saveType, data.inputs.path, glm::uvec2{equirectangularImage.getWidth(), equirectangularImage.getHeight()}, numComponents, data.inputs.hdrFlowmap, equirectangularImage.getData());
 }
-image_ptr loadImageData(std::string path, int type, bool hdr, glm::ivec2 &size)
+image_ptr loadImageData(std::string path, int type, bool hdr, glm::ivec2 &size, std::stringstream &messages)
 {
     switch(type)
     {
@@ -1291,7 +1326,7 @@ image_ptr loadImageData(std::string path, int type, bool hdr, glm::ivec2 &size)
     stbi_hdr_to_ldr_gamma(2.2f);
     if(!buffer || !size.x || !size.y) 
     {
-        LOG_ERROR("failed to load \"%s\": %s", path.c_str(), stbi_failure_reason());
+        messages << "failed to load \"" << path << "\": " << stbi_failure_reason() << '\n';
         return image_ptr{nullptr, &stbi_image_free};
     }
 
@@ -1322,9 +1357,9 @@ image_ptr loadImageData(std::string path, int type, bool hdr, glm::ivec2 &size)
 
     return data;
 }
-ogl::Texture load(std::string path, int type, bool hdr, glm::ivec2 &size)
+ogl::Texture load(std::string path, int type, bool hdr, glm::ivec2 &size, std::stringstream &messages)
 {
-    auto data = loadImageData(path, type, hdr, size);
+    auto data = loadImageData(path, type, hdr, size, messages);
 
     if(!data.get())
     {
@@ -1339,14 +1374,16 @@ ogl::Texture load(std::string path, int type, bool hdr, glm::ivec2 &size)
 }
 void loadUnwrapped(Data &data)
 {
+    MessageStream message;
+    message.setData(data);
     glm::ivec2 size;
 
-    ogl::Texture unwrappedTexture = load(data.inputs.path, data.inputs.saveType, data.inputs.hdrFlowmap, size);
+    ogl::Texture unwrappedTexture = load(data.inputs.path, data.inputs.saveType, data.inputs.hdrFlowmap, size, message);
     if(unwrappedTexture.getRenderID() == 0) return;
     
     if(size.x * 2 != size.y * 3)
     {
-        LOG_ERROR("wrong layout to load! (expected 3x*2x, got %i*%i) \"%s\"", size.x, size.y, data.inputs.path.c_str());
+        message << "wrong layout to load! (expected 3x*2x, got " << size.x << "*" << size.y << ") \"" << data.inputs.path << "\"\n";
         return;
     }
     
@@ -1370,19 +1407,22 @@ void loadUnwrapped(Data &data)
     }
 }
 void loadSixImages(Data &data)
-{ // FIXME: image is rotated on load???
+{
+    MessageStream message;
+    message.setData(data);
+
     for(int i = 0; i < NUM_CUBEMAP_FACES; ++i){
         std::string path = data.inputs.path;
         path = path + '/' + std::string{names[i]};
 
         glm::ivec2 size;
-        ogl::Texture texture = load(path, data.inputs.saveType, data.inputs.hdrFlowmap, size);
+        ogl::Texture texture = load(path, data.inputs.saveType, data.inputs.hdrFlowmap, size, message);
         if(texture.getRenderID() == 0) return;
 
         if(size.x != size.y)
         {
-            LOG_ERROR("image \"%s\" is not square!", path.c_str());
-            return;
+            message << "image \"" << path.c_str() << "\" is not square!";
+            continue;
         }
         data.flowMapSize = size.x;
         
@@ -1403,13 +1443,16 @@ void loadSixImages(Data &data)
 }
 void loadEquirectangular(Data &data)
 {
+    MessageStream message;
+    message.setData(data);
+
     glm::ivec2 size;
-    auto imageData = loadImageData(data.inputs.path, data.inputs.saveType, data.inputs.hdrFlowmap, size);
+    auto imageData = loadImageData(data.inputs.path, data.inputs.saveType, data.inputs.hdrFlowmap, size, message);
     if(!imageData.get()) return;
 
     if(size.x != 2 * size.y)
     {
-        LOG_ERROR("image \"%s\" is not 2x1!", data.inputs.path.c_str());
+        message << "image \"" << data.inputs.path.c_str() << "\" is not 2x1!";
         return;
     }
     data.flowMapSize = size.y / 2;
