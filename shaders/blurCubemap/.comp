@@ -1,12 +1,7 @@
 #version 440
 
 layout (local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
-layout(rgba32f, binding = 0) uniform imageCube u_image;
-
-vec4 sampleOffset(imageCube cube, ivec2 offset)
-{
-    return imageLoad(cube, ivec3(gl_GlobalInvocationID.xy + offset, gl_GlobalInvocationID.z));
-}
+layout(rgba32f, binding = 0) coherent uniform imageCube u_image;
 
 const ivec2 offsets[25] = ivec2[](
     ivec2(-2, -2), ivec2(-1, -2), ivec2( 0, -2), ivec2( 1, -2), ivec2( 2, -2),
@@ -20,7 +15,7 @@ void main()
 {
     vec4 color = vec4(0);
     for(int i = 0; i < offsets.length(); ++i)
-        color += sampleOffset(u_image, offsets[i]);
+        color += imageLoad(u_image, ivec3(gl_GlobalInvocationID.xy + offsets[i], gl_GlobalInvocationID.z));
     color /= offsets.length();
 
     imageStore(u_image, ivec3(gl_GlobalInvocationID.xyz), vec4(color.rgb, float(color.a != 0)));
