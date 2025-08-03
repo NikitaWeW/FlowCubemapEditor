@@ -136,7 +136,7 @@ struct Data
         int showFlow = false;
         bool blurPreview = true;
         bool eraseMode;
-        bool hdrFlowmap = true;
+        bool hdrFlowmap = false;
         float sensitivity = 1;
         float brushSize = 0.1;
         unsigned blurSteps = 100;
@@ -200,7 +200,20 @@ int main(int argc, char **argv)
 
     // ===================================
     Data data{};
-    data.messages.push(std::stringstream{} << "hello!");
+    std::stringstream message;
+    message 
+    << "Hello!\n"
+    << "This is Flow Cubemap Painter. It allows you to draw directions onto a cube, and import/export drawings using different layouts.\n";
+    data.messages.push(std::move(message));
+
+    message.clear();
+    message
+    << "You can dock the properties window by dragging it by the top header.\n"
+    << "To orbit the cube, drag with the right mouse button or use the arrow keys.\n"
+    << "Scroll to change the orbit radius.\n"
+    << "Draw using the left mouse button.\n"
+    << "Once you're done, press the 'Save As...' button, choose the layout, file type, and number of blur steps (0 means no blur), then save.\n";
+    data.messages.push(std::move(message));
 
     ogl::Cubemap skybox{"res/textures/qwantani_dawn_puresky_4k.hdr"};
     ogl::Texture flowTexture{"res/textures/water.jpg"};
@@ -407,7 +420,7 @@ int main(int argc, char **argv)
         ImGui::RadioButton("Water", &data.inputs.showFlow, 0);
 
         ImGui::Checkbox("Blur Preview", &data.inputs.blurPreview);
-        helpMarker("Does not affect final result");
+        helpMarker("Does not affect final result. To blur the output image, use 'Save As... -> Blur steps'.");
 
         ImGui::Separator();
 
@@ -441,7 +454,7 @@ int main(int argc, char **argv)
             }
         }
         ImGui::SameLine();
-        if(ImGui::Button("Save As.."))
+        if(ImGui::Button("Save As..."))
             ImGui::OpenPopup("Save As");
 
         if(!data.messages.empty())
@@ -565,18 +578,18 @@ int main(int argc, char **argv)
 
             ImGui::EndPopup();
         }
-        if(ImGui::BeginPopup("Message", ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_AlwaysUseWindowPadding))
+        if(ImGui::BeginPopupModal("Message", NULL, ImGuiWindowFlags_AlwaysAutoResize))
         {
-            ImGui::Text(data.messages.front().str().c_str());
+            ImGui::TextWrapped(data.messages.front().str().c_str());
 
             ImGui::Separator();
 
-            if((data.messages.size() == 1) && ImGui::Button("Ok", ImVec2(120, 0)))
+            if((data.messages.size() == 1) && ImGui::Button("Ok", ImVec2(240, 0)))
             {
                 data.messages.pop();
                 ImGui::CloseCurrentPopup(); 
             }
-            if((data.messages.size() > 1) && ImGui::Button("Next", ImVec2(120, 0)))
+            if((data.messages.size() > 1) && ImGui::Button("Next", ImVec2(240, 0)))
             {
                 data.messages.pop();
             }
@@ -998,6 +1011,11 @@ void drawStroke(Data &data)
 
     data.prevIntersectionPoint = data.intersectionPoint;
 }
+bool shouldProcessInput(Data &data)
+{
+    return !ImGui::IsWindowFocused(ImGuiFocusedFlags_AnyWindow);
+    // return !ImGui::GetIO().WantCaptureMouse;
+}
 void processInput(Data &data)
 {
     assert(data.window);
@@ -1012,20 +1030,20 @@ void processInput(Data &data)
     data.deltaMouse /= glm::max<float>(data.windowSize.x, data.windowSize.y) / 1000.0f;
     data.prevMousePos = data.mousePos;
 
-    bool focused = ImGui::IsWindowFocused(ImGuiFocusedFlags_AnyWindow);
+    bool focused = shouldProcessInput(data);
 
-    if((glfwGetKey(data.window, GLFW_KEY_LEFT)  == GLFW_PRESS) && !focused) data.yawPitch.velocity.x += data.deltatime * data.inputs.sensitivity * 400.0f;
-    if((glfwGetKey(data.window, GLFW_KEY_RIGHT) == GLFW_PRESS) && !focused) data.yawPitch.velocity.x -= data.deltatime * data.inputs.sensitivity * 400.0f;
-    if((glfwGetKey(data.window, GLFW_KEY_UP)    == GLFW_PRESS) && !focused) data.yawPitch.velocity.y += data.deltatime * data.inputs.sensitivity * 400.0f;
-    if((glfwGetKey(data.window, GLFW_KEY_DOWN)  == GLFW_PRESS) && !focused) data.yawPitch.velocity.y -= data.deltatime * data.inputs.sensitivity * 400.0f;
-    if(cameraLocked && !focused) 
+    if((glfwGetKey(data.window, GLFW_KEY_LEFT)  == GLFW_PRESS) && focused) data.yawPitch.velocity.x += data.deltatime * data.inputs.sensitivity * 400.0f;
+    if((glfwGetKey(data.window, GLFW_KEY_RIGHT) == GLFW_PRESS) && focused) data.yawPitch.velocity.x -= data.deltatime * data.inputs.sensitivity * 400.0f;
+    if((glfwGetKey(data.window, GLFW_KEY_UP)    == GLFW_PRESS) && focused) data.yawPitch.velocity.y += data.deltatime * data.inputs.sensitivity * 400.0f;
+    if((glfwGetKey(data.window, GLFW_KEY_DOWN)  == GLFW_PRESS) && focused) data.yawPitch.velocity.y -= data.deltatime * data.inputs.sensitivity * 400.0f;
+    if(cameraLocked && focused) 
     {
         data.yawPitch.velocity += glm::vec2{data.deltaMouse.x, -data.deltaMouse.y} * data.deltatime * data.inputs.sensitivity * 400.0f;
     }
 
     updateVP(data, cameraLocked);
     
-    if(glfwGetMouseButton(data.window, GLFW_MOUSE_BUTTON_LEFT) && !cameraLocked && (data.deltaMouse != glm::vec2{0}) && !focused)
+    if(glfwGetMouseButton(data.window, GLFW_MOUSE_BUTTON_LEFT) && !cameraLocked && (data.deltaMouse != glm::vec2{0}) && focused)
     {
         drawStroke(data);
     }
@@ -1037,17 +1055,20 @@ void processInput(Data &data)
 void scroll_callback(GLFWwindow* window, double xoffset, double yoffset)
 {
     Data &data = *static_cast<Data *>(glfwGetWindowUserPointer(window));
-    if(ImGui::IsWindowFocused()) {
-        ImGui_ImplGlfw_ScrollCallback(window, xoffset, yoffset);
+    if(shouldProcessInput(data)) {
+        data.distance.velocity -= yoffset * data.deltatime * data.inputs.sensitivity * 200.0f;
     } else {
-        data.distance.velocity -= yoffset * data.deltatime * data.inputs.sensitivity * 500.0f;
+        ImGui_ImplGlfw_ScrollCallback(window, xoffset, yoffset);
     }
 }
 void key_callback(GLFWwindow* window, int key, int scancode, int action, int mods)
 {
-    if(ImGui::IsWindowFocused(ImGuiFocusedFlags_AnyWindow)) {
+    Data &data = *static_cast<Data *>(glfwGetWindowUserPointer(window));
+    if(shouldProcessInput(data)) 
+    {
+    } else 
+    {
         ImGui_ImplGlfw_KeyCallback(window, key, scancode, action, mods);
-    } else {
     }
 }
 void helpMarker(const char* desc)

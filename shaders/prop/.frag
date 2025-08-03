@@ -39,7 +39,7 @@ void main()
 {
     vec2 flow;
     if(u_blurPreview)
-        flow = textureBlurred(u_flowMap, fs_in.fragPos, 0.04).rg;
+        flow = textureBlurred(u_flowMap, fs_in.fragPos, 0.03).rg;
     else 
         flow = texture(u_flowMap, fs_in.fragPos).rg;
 
