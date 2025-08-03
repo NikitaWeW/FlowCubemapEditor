@@ -1,6 +1,6 @@
 Introduction
 ===
-A flow map editor, but on a cube. Inspired by this [flow map painter](https://teckartist.com/?page_id=107).
+A flow map editor, but on a cube. Inspired by this [flow map painter](https://teckartist.com/?page_id=107). This is mostly a 1500 line mess, but I think its fine for such a small project like this.
 
 Build
 ===
@@ -12,6 +12,18 @@ cmake --build build
 cmake --install build --prefix build/install
 ```
 
+Usage
+===
+
+the unwrapped cube layout is the following:
+```
++----+----+----+
+| X+ | Y+ | Z+ |
++----+----+----+
+| X- | Y- | Z- |
++----+----+----+
+```
+
 HDR flowmaps
 ===
 
@@ -20,7 +32,6 @@ There is an option to bake the flowmap in HDR, which means values won’t be cla
 ```
     red   = blue  ? -red : red;
     green = alpha ? -green : green;
-
 ```
 
 ---

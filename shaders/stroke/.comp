@@ -11,7 +11,7 @@ uniform float u_verticalMult = 1;
 uniform bool u_erase = false;
 uniform mat2 u_horizontalRotation;
 
-const float flowIntencity = 10.0f;
+const float flowIntensity = 10.0f;
 
 // thanks to https://github.com/Nadrin/PBR/blob/master/data/shaders/glsl/equirect2cube_cs.glsl
 vec3 getSamplingPoint()

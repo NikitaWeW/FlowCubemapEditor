@@ -95,7 +95,7 @@ enum SaveType : int
 };
 enum SaveLayout : int 
 { 
-    UNWRAPPED = 0, SIX_IMAGES = 1, EQUIRECTANGULAR = 2 
+    UNWRAPPED = 0, SIX_IMAGES = 1, EQUIRECTANGULAR = 2, ONE_IMAGE
 };
 
 // for a small application like this i think its fine to use a single struct as an app state
@@ -120,6 +120,9 @@ struct Data
 
     unsigned flowMapSize = -1;
     ogl::Cubemap flowMap;
+    ogl::Cubemap textureCubemap;
+    ogl::Texture texture2d;
+    bool customCubemap;
 
     ogl::ShaderProgram flowMapDrawShader;
     ogl::ShaderProgram flowMapClearShader;
@@ -133,14 +136,20 @@ struct Data
     struct Inputs {
         int saveType = PNG;
         int saveLayout = UNWRAPPED;
+        int textureLayout = ONE_IMAGE;
+        
         int showFlow = false;
         bool blurPreview = true;
         bool eraseMode;
         bool hdrFlowmap = false;
+
         float sensitivity = 1;
         float brushSize = 0.1;
+        float flowIntensity = 0.05;
         unsigned blurSteps = 100;
+
         std::string path = "flowmap";
+        std::string texturePath = "res/textures/water.jpg";
     } inputs;
     
     std::queue<std::stringstream> messages;
@@ -173,7 +182,6 @@ constexpr float ZFAR = 100;
 constexpr float CUBE_MODEL_SIZE = 1.0f; 
 
 void resizeColorAttachment(ogl::Framebuffer &fbo, ogl::Texture &texture, glm::ivec2 size, GLenum attachment = GL_COLOR_ATTACHMENT0);
-int main(int argc, char **argv);
 void resizeColorAttachment(ogl::Framebuffer &fbo, ogl::TextureMS &texture, glm::ivec2 size, GLenum attachment = GL_COLOR_ATTACHMENT0);
 bool init(GLFWwindow **window);
 Mesh loadMesh(std::string_view path);
@@ -185,9 +193,10 @@ void clearFlowMap(Data &data);
 void saveUnwrapped(Data &data);
 void saveSixImages(Data &data);
 void saveEquirectangular(Data &data);
-void loadUnwrapped(Data &data);
-void loadSixImages(Data &data);
-void loadEquirectangular(Data &data);
+bool loadUnwrapped(std::string path, bool hdrFlowmap, unsigned &faceSize, std::stringstream &message, ogl::Cubemap &cubemap, bool postProcess);
+bool loadSixImages(std::string path, bool hdrFlowmap, unsigned &faceSize, std::stringstream &message, ogl::Cubemap &cubemap, bool postProcess);
+bool loadEquirectangular(std::string path, bool hdrFlowmap, unsigned &faceSize, std::stringstream &message, ogl::Cubemap &cubemap, bool postProcess);
+void loadCustomTexture(Data &data);
 
 int main(int argc, char **argv)
 {
@@ -216,7 +225,8 @@ int main(int argc, char **argv)
     data.messages.push(std::move(message));
 
     ogl::Cubemap skybox{"res/textures/qwantani_dawn_puresky_4k.hdr"};
-    ogl::Texture flowTexture{"res/textures/water.jpg"};
+    data.texture2d = ogl::Texture{"res/textures/water.jpg"};
+    data.customCubemap = false;
 
     ogl::ShaderProgram cubeShader{"shaders/prop"};
     ogl::ShaderProgram displayShader{"shaders/hdrImage"};
@@ -364,14 +374,17 @@ int main(int argc, char **argv)
 
         cubeShader.bind();
         data.flowMap.bind(0);
-        flowTexture.bind(1);
+        data.texture2d.bind(1);
+        data.textureCubemap.bind(2);
         
-        glUniform1i(       cubeShader.getUniform("u_showFlow"),       data.inputs.showFlow);
-        glUniform1i(       cubeShader.getUniform("u_blurPreview"),    data.inputs.blurPreview);
-        glUniform1f(       cubeShader.getUniform("u_time"),           glfwGetTime());
-        glUniformMatrix4fv(cubeShader.getUniform("u_modelMat"),       1, GL_FALSE, glm::value_ptr(glm::mat4{1.0f}));
-        glUniformMatrix4fv(cubeShader.getUniform("u_viewMat"),        1, GL_FALSE, glm::value_ptr(data.viewMat));
-        glUniformMatrix4fv(cubeShader.getUniform("u_projectionMat"),  1, GL_FALSE, glm::value_ptr(data.projMat));
+        glUniform1i(       cubeShader.getUniform("u_showFlow"),        data.inputs.showFlow);
+        glUniform1i(       cubeShader.getUniform("u_blurPreview"),     data.inputs.blurPreview);
+        glUniform1i(       cubeShader.getUniform("u_isTextureCubemap"),data.customCubemap);
+        glUniform1f(       cubeShader.getUniform("u_flowIntensity"),   data.inputs.flowIntensity);
+        glUniform1f(       cubeShader.getUniform("u_time"),            glfwGetTime());
+        glUniformMatrix4fv(cubeShader.getUniform("u_modelMat"),        1, GL_FALSE, glm::value_ptr(glm::mat4{1.0f}));
+        glUniformMatrix4fv(cubeShader.getUniform("u_viewMat"),         1, GL_FALSE, glm::value_ptr(data.viewMat));
+        glUniformMatrix4fv(cubeShader.getUniform("u_projectionMat"),   1, GL_FALSE, glm::value_ptr(data.projMat));
         
         cube.vao.bind();
         glDrawArrays(GL_TRIANGLES, 0, cube.count);
@@ -407,7 +420,23 @@ int main(int argc, char **argv)
         ImGui::Begin(CONFIG_WINDOW_NAME.data(), nullptr);
 
         ImGui::DragFloat("Sensitivity", &data.inputs.sensitivity, 0.01, 0.01, 100);
-        ImGui::SliderFloat("Brush Size", &data.inputs.brushSize, 0.01, 0.5w);
+        ImGui::SliderFloat("Brush Size", &data.inputs.brushSize, 0.01, 0.5);
+        
+        static int intflowmapSize = data.flowMapSize;
+        if(ImGui::InputInt("Flow Map Size", &intflowmapSize, 100, 1024))
+        {
+            intflowmapSize = glm::max<int>(intflowmapSize, 100);
+            data.flowMapSize = static_cast<unsigned>(intflowmapSize);
+            data.flowMap = ogl::Cubemap{0};
+            glTextureStorage2D(
+                data.flowMap.getRenderID(),
+                1,
+                GL_RGBA32F,
+                data.flowMapSize,
+                data.flowMapSize
+            );
+        }
+        ImGui::DragFloat("Flow intensity", &data.inputs.flowIntensity, 0.001, 0.005, 1);
 
         enum { Mode_Paint, Mode_Erase, ModeCount };
         static int elem = Mode_Paint;
@@ -456,6 +485,9 @@ int main(int argc, char **argv)
         ImGui::SameLine();
         if(ImGui::Button("Save As..."))
             ImGui::OpenPopup("Save As");
+
+        if(ImGui::Button("Load custom texture"))
+            ImGui::OpenPopup("Load texture");
 
         if(!data.messages.empty())
             ImGui::OpenPopup("Message");
@@ -539,31 +571,32 @@ int main(int argc, char **argv)
             ImGui::Separator();
 
             ImGui::Combo("layout", &data.inputs.saveLayout, "unwrapped cube\0six images\0equirectangular\0");
-            ImGui::Combo("type", &data.inputs.saveType, "png\0hdr\0");
 
             ImGui::Separator();
 
             if(data.inputs.saveLayout == SIX_IMAGES)
                 ImGui::InputText("path (directory)", &data.inputs.path);
             else
-                ImGui::InputText("path (no extension)", &data.inputs.path);
+                ImGui::InputText("path", &data.inputs.path);
 
             if(data.inputs.path != "")
             {
                 if(ImGui::Button("Load", ImVec2(120, 0))) { 
+                    MessageStream message;
+                    message.setData(data);
                     switch (data.inputs.saveLayout)
                     {
                     case UNWRAPPED:
-                        loadUnwrapped(data);
+                        loadUnwrapped(data.inputs.path, data.inputs.hdrFlowmap, data.flowMapSize, message, data.flowMap, true);
                         break;
                     case SIX_IMAGES:
-                        loadSixImages(data);
+                        loadSixImages(data.inputs.path, data.inputs.hdrFlowmap, data.flowMapSize, message, data.flowMap, true);
                         break;
                     case EQUIRECTANGULAR:
-                        loadEquirectangular(data);
+                        loadEquirectangular(data.inputs.path, data.inputs.hdrFlowmap, data.flowMapSize, message, data.flowMap, true);
                         break;
                     default:
-                        assert(false && "unrecognized layout");
+                        message << "unrecognized layout!\n";
                         break;
                     }
                     ImGui::CloseCurrentPopup(); 
@@ -592,6 +625,33 @@ int main(int argc, char **argv)
             if((data.messages.size() > 1) && ImGui::Button("Next", ImVec2(240, 0)))
             {
                 data.messages.pop();
+            }
+
+            ImGui::EndPopup();
+        }
+        if(ImGui::BeginPopupModal("Load texture", NULL, ImGuiWindowFlags_AlwaysAutoResize))
+        {
+            ImGui::Combo("layout", &data.inputs.textureLayout, "unwrapped cube\0six images\0equirectangular\0one image\0");
+
+            ImGui::Separator();
+
+            if(data.inputs.saveLayout == SIX_IMAGES)
+                ImGui::InputText("path (directory)", &data.inputs.texturePath);
+            else
+                ImGui::InputText("path", &data.inputs.texturePath);
+
+            if(data.inputs.texturePath != "")
+            {
+                if(ImGui::Button("Load", ImVec2(120, 0))) { 
+                    loadCustomTexture(data);
+                    ImGui::CloseCurrentPopup(); 
+                }
+
+                ImGui::SameLine();
+            }
+            ImGui::SetItemDefaultFocus();
+            if(ImGui::Button("Cancel", ImVec2(120, 0))) { 
+                ImGui::CloseCurrentPopup(); 
             }
 
             ImGui::EndPopup();
@@ -719,7 +779,7 @@ void APIENTRY debugCallback(GLenum source, GLenum type, GLuint id, GLenum severi
         break;
     }
 
-    std::cout << error.id << ": opengl" << error.severity << "severity " << error.type << ", raised from " << error.source << ":\n\t" << error.msg << '\n';
+    std::cout << error.id << ": opengl " << error.severity << " severity " << error.type << ", raised from " << error.source << ":\n\t" << error.msg << '\n';
 }
 void resizeColorAttachment(ogl::Framebuffer &fbo, ogl::TextureMS &texture, glm::ivec2 size, GLenum attachment)
 {
@@ -1330,18 +1390,13 @@ void saveEquirectangular(Data &data)
 
     save(data.inputs.saveType, data.inputs.path, glm::uvec2{equirectangularImage.getWidth(), equirectangularImage.getHeight()}, numComponents, data.inputs.hdrFlowmap, equirectangularImage.getData());
 }
-image_ptr loadImageData(std::string path, int type, bool hdr, glm::ivec2 &size, std::stringstream &messages)
+template <typename T>
+T roundN(T num, unsigned digits = 2)
 {
-    switch(type)
-    {
-    case PNG:
-        path += ".png";
-        break;
-    case HDR:
-        path += ".hdr";
-        break;
-    }
-
+    return glm::round(num * static_cast<T>(glm::pow(10, digits))) / static_cast<T>(glm::pow(10, digits));
+}
+image_ptr loadImageData(std::string path, bool hdr, bool postProcess, glm::ivec2 &size, std::stringstream &messages)
+{
     int numChannels;
     size = glm::ivec2{0};
     stbi_ldr_to_hdr_gamma(1.0f);
@@ -1356,18 +1411,10 @@ image_ptr loadImageData(std::string path, int type, bool hdr, glm::ivec2 &size, 
         return image_ptr{nullptr, &stbi_image_free};
     }
 
+    if(!postProcess)
+        return data;
     
-    if(!hdr)
-    {
-        for (size_t i = 0; i < static_cast<size_t>(size.x * size.y * 4); i+=4) {
-            float &r = buffer[i+0];
-            float &g = buffer[i+1];
-
-            r = (r - 0.5f) * 2.0f * LDR_SCALE;
-            g = (g - 0.5f) * 2.0f * LDR_SCALE;
-        }
-    }
-    else
+    if(hdr)
     {
         for (size_t i = 0; i < static_cast<size_t>(size.x * size.y * 4); i+=4) {
             float &r = buffer[i+0];
@@ -1380,12 +1427,25 @@ image_ptr loadImageData(std::string path, int type, bool hdr, glm::ivec2 &size, 
             g = a ? -g : g;
         }
     }
+    else
+    {
+        for (size_t i = 0; i < static_cast<size_t>(size.x * size.y * 4); i+=4) {
+            float &r = buffer[i+0];
+            float &g = buffer[i+1];
+
+            r = roundN(r, 2);
+            g = roundN(g, 2);
+
+            r = (r - 0.5f) * 2.0f * LDR_SCALE;
+            g = (g - 0.5f) * 2.0f * LDR_SCALE;
+        }
+    }
 
     return data;
 }
-ogl::Texture load(std::string path, int type, bool hdr, glm::ivec2 &size, std::stringstream &messages)
+ogl::Texture load(std::string path, bool hdr, bool postProcess, glm::ivec2 &size, std::stringstream &messages)
 {
-    auto data = loadImageData(path, type, hdr, size, messages);
+    auto data = loadImageData(path, hdr, postProcess, size, messages);
 
     if(!data.get())
     {
@@ -1398,91 +1458,130 @@ ogl::Texture load(std::string path, int type, bool hdr, glm::ivec2 &size, std::s
 
     return texture;
 }
-void loadUnwrapped(Data &data)
+bool loadUnwrapped(std::string path, bool hdrFlowmap, unsigned &faceSize, std::stringstream &message, ogl::Cubemap &cubemap, bool postProcess)
 {
-    MessageStream message;
-    message.setData(data);
     glm::ivec2 size;
 
-    ogl::Texture unwrappedTexture = load(data.inputs.path, data.inputs.saveType, data.inputs.hdrFlowmap, size, message);
-    if(unwrappedTexture.getRenderID() == 0) return;
+    ogl::Texture unwrappedTexture = load(path, hdrFlowmap, postProcess, size, message);
+    if(unwrappedTexture.getRenderID() == 0) return false;
     
     if(size.x * 2 != size.y * 3)
     {
-        message << "wrong layout to load! (expected 3x*2x, got " << size.x << "*" << size.y << ") \"" << data.inputs.path << "\"\n";
-        return;
+        message << "wrong layout to load! (expected 3x*2x, got " << size.x << "*" << size.y << ") \"" << path << "\"\n";
+        return false;
     }
     
-    data.flowMapSize = size.y / 2;
+    faceSize = size.y / 2;
+    cubemap = ogl::Cubemap{0};
+    glTextureStorage2D(
+        cubemap.getRenderID(),
+        1,
+        GL_RGBA32F,
+        faceSize,
+        faceSize
+    );
     
     for(int i = 0; i < NUM_CUBEMAP_FACES; ++i){
-        glm::uvec2 pos = cells[i] * data.flowMapSize;
+        glm::uvec2 pos = cells[i] * faceSize;
         glCopyImageSubData(
             unwrappedTexture.getRenderID(), // src name
             GL_TEXTURE_2D,                  // src target
             0,                              // src level
             pos.x, pos.y, 0,                // src x,y,z
-            data.flowMap.getRenderID(),     // dst name
+            cubemap.getRenderID(),          // dst name
             GL_TEXTURE_CUBE_MAP,            // dst target
             0,                              // dst level
             0, 0, i,                        // dst x,y,z
-            data.flowMapSize,               // width
-            data.flowMapSize,               // height
+            faceSize,                       // width
+            faceSize,                       // height
             1                               // depth
         );
     }
+
+    return true;
 }
-void loadSixImages(Data &data)
+bool loadSixImages(std::string path, bool hdrFlowmap, unsigned &faceSize, std::stringstream &message, ogl::Cubemap &cubemap, bool postProcess)
 {
-    MessageStream message;
-    message.setData(data);
+    if(!std::filesystem::exists(path))
+    {
+        message << "path \"" << path << "\" doesent exist!\n";
+        return false;
+    }
+    std::string extension = "";
+    for (auto const& dir_entry : std::filesystem::directory_iterator{path}) 
+        if(std::find(names.begin(), names.end(), dir_entry.path().stem()) != names.end())
+        {
+            extension = dir_entry.path().extension();
+            break;
+        }
+    if(extension == "")
+    {
+        message << "cant determine file type in directory \"" << path << "\"!\n";
+        return false;
+    }
 
     for(int i = 0; i < NUM_CUBEMAP_FACES; ++i){
-        std::string path = data.inputs.path;
-        path = path + '/' + std::string{names[i]};
+        std::string file = path;
+        file += '/' + std::string{names[i]};
+        file += extension;
 
         glm::ivec2 size;
-        ogl::Texture texture = load(path, data.inputs.saveType, data.inputs.hdrFlowmap, size, message);
-        if(texture.getRenderID() == 0) return;
+        auto textureData = loadImageData(file, hdrFlowmap, postProcess, size, message);
+        if(!textureData.get()) return false;
 
         if(size.x != size.y)
         {
-            message << "image \"" << path.c_str() << "\" is not square!";
-            continue;
+            message << "image \"" << file.c_str() << "\" is not square!";
+            return false;
         }
-        data.flowMapSize = size.x;
+        faceSize = size.x;
+        if(i == 0)
+        {
+            cubemap = ogl::Cubemap{0};
+            glTextureStorage2D(
+                cubemap.getRenderID(),
+                1,
+                GL_RGBA32F,
+                faceSize,
+                faceSize
+            );
+        }
         
-        glCopyImageSubData(
-            texture.getRenderID(),          // src name
-            GL_TEXTURE_2D,                  // src target
-            0,                              // src level
-            0, 0, 0,                        // src x,y,z
-            data.flowMap.getRenderID(),     // dst name
-            GL_TEXTURE_CUBE_MAP,            // dst target
-            0,                              // dst level
-            0, 0, i,                        // dst x,y,z
-            data.flowMapSize,               // width
-            data.flowMapSize,               // height
-            1                               // depth
+        const void* sourceImage = textureData.get();
+        glTextureSubImage3D(
+            cubemap.getRenderID(), 
+            0,       // layer
+            0, 0, i, // x,y,z
+            faceSize, faceSize, // 2D image dimensions
+            1,          // depth
+            GL_RGBA,    // format
+            GL_FLOAT,   // data type
+            sourceImage
         );
     }
+    return true;
 }
-void loadEquirectangular(Data &data)
+bool loadEquirectangular(std::string path, bool hdrFlowmap, unsigned &faceSize, std::stringstream &message, ogl::Cubemap &cubemap, bool postProcess)
 {
-    MessageStream message;
-    message.setData(data);
-
     glm::ivec2 size;
-    auto imageData = loadImageData(data.inputs.path, data.inputs.saveType, data.inputs.hdrFlowmap, size, message);
-    if(!imageData.get()) return;
+    auto imageData = loadImageData(path, hdrFlowmap, postProcess, size, message);
+    if(!imageData.get()) return false;
 
     if(size.x != 2 * size.y)
     {
-        message << "image \"" << data.inputs.path.c_str() << "\" is not 2x1!";
-        return;
+        message << "image \"" << path.c_str() << "\" is not 2x1!";
+        return false;
     }
-    data.flowMapSize = size.y / 2;
+    faceSize = size.y / 2;
 
+    cubemap = ogl::Cubemap{0};
+    glTextureStorage2D(
+        cubemap.getRenderID(),
+        1,
+        GL_RGBA32F,
+        faceSize,
+        faceSize
+    );
     Bitmap<float> equirectangularImage{static_cast<unsigned>(size.x), static_cast<unsigned>(size.y), 4, imageData.get()};
 
     std::array<Bitmap<float>, eqr::NUM_CUBEMAP_FACES> cubemapFaces = eqr::toCubemap(equirectangularImage);
@@ -1490,7 +1589,7 @@ void loadEquirectangular(Data &data)
     for(int i = 0; i < NUM_CUBEMAP_FACES; ++i){
         const void* sourceImage = cubemapFaces[i].getData();
         glTextureSubImage3D(
-            data.flowMap.getRenderID(), 
+            cubemap.getRenderID(), 
             0,       // layer
             0, 0, i, // x,y,z
             cubemapFaces[0].getWidth(), cubemapFaces[0].getHeight(), // 2D image dimensions
@@ -1499,5 +1598,48 @@ void loadEquirectangular(Data &data)
             GL_FLOAT,   // data type
             sourceImage
         );
+    }
+    return true;
+}
+void loadCustomTexture(Data &data)
+{
+    MessageStream message;
+    message.setData(data);
+
+    switch (data.inputs.textureLayout)
+    {
+    case UNWRAPPED:
+        {
+            unsigned faceSize;
+            bool result = loadUnwrapped(data.inputs.texturePath, data.inputs.hdrFlowmap, faceSize, message, data.textureCubemap, false);
+            if(result) data.customCubemap = true;
+        }
+        break;
+    case SIX_IMAGES:
+        {
+            unsigned faceSize;
+            bool result = loadSixImages(data.inputs.texturePath, data.inputs.hdrFlowmap, faceSize, message, data.textureCubemap, false);
+            if(result) data.customCubemap = true;
+        }
+        break;
+    case EQUIRECTANGULAR:
+        {
+            unsigned faceSize;
+            bool result = loadEquirectangular(data.inputs.texturePath, data.inputs.hdrFlowmap, faceSize, message, data.textureCubemap, false);
+            if(result) data.customCubemap = true;
+        }
+        break;
+    case ONE_IMAGE:
+        {
+            glm::ivec2 size;
+            ogl::Texture texture2d = load(data.inputs.texturePath, data.inputs.hdrFlowmap, false, size, message);
+            if(texture2d.getRenderID() == 0) break;
+            data.customCubemap = false;
+            data.texture2d = texture2d;
+        }
+        break;
+    default:
+        message << "unrecognized layout!\n";
+        break;
     }
 }
