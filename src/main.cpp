@@ -148,7 +148,7 @@ struct Data
         float flowIntensity = 0.05;
         unsigned blurSteps = 100;
 
-        std::string path = "flowmap";
+        std::string path = "flowmap.png";
         std::string texturePath = "res/textures/water.jpg";
     } inputs;
     
@@ -533,7 +533,7 @@ int main(int argc, char **argv)
             if(data.inputs.saveLayout == SIX_IMAGES)
                 ImGui::InputText("path (directory)", &data.inputs.path);
             else
-                ImGui::InputText("path (no extension)", &data.inputs.path);
+                ImGui::InputText("path", &data.inputs.path);
 
             if(data.inputs.path != "")
             {
@@ -1220,20 +1220,7 @@ void save(int type, std::string path, glm::uvec2 size, unsigned numComponents, b
 
     float *data = inputData;
 
-    if(!hdr)
-    {
-        for (size_t i = 0; i < size.x * size.y * numComponents; ++i) {
-            data[i] = glm::clamp(data[i] / LDR_SCALE * 0.5f + 0.5f, 0.0f, 1.0f);
-        }
-        for (size_t i = 0; i < size.x * size.y * numComponents; i+=4) {
-            float &b = data[i+2];
-            float &a = data[i+3];
-
-            b = 0.0f;
-            a = 1.0f;
-        }
-    }
-    else
+    if(hdr)
     {
         for (size_t i = 0; i < size.x * size.y * numComponents; i+=4) {
             float &r = data[i+0];
@@ -1246,6 +1233,19 @@ void save(int type, std::string path, glm::uvec2 size, unsigned numComponents, b
             a = float(g < 0);
             r = glm::abs(r);
             g = glm::abs(g);
+        }
+    }
+    else
+    {
+        for (size_t i = 0; i < size.x * size.y * numComponents; ++i) {
+            data[i] = glm::clamp(data[i] / LDR_SCALE * 0.5f + 0.5f, 0.0f, 1.0f);
+        }
+        for (size_t i = 0; i < size.x * size.y * numComponents; i+=4) {
+            float &b = data[i+2];
+            float &a = data[i+3];
+
+            b = 0.0f;
+            a = 1.0f;
         }
     }
     
@@ -1267,12 +1267,10 @@ void save(int type, std::string path, glm::uvec2 size, unsigned numComponents, b
     switch (type)
     {
     case PNG:
-        path += ".png";
         assert(u8data);
         stbi_write_png(path.data(), size.x, size.y, numComponents, u8data.get(), size.x * numComponents);
         break;
     case HDR:
-        path += ".hdr";
         stbi_write_hdr(path.data(), size.x, size.y, numComponents, data);
         break;
     default:
@@ -1360,7 +1358,7 @@ void saveEquirectangular(Data &data)
 
     int const numComponents = 4;
 
-    std::array<Bitmap<float>, eqr::NUM_CUBEMAP_FACES> cubemapFaces;
+    std::array<Bitmap<float>, NUM_CUBEMAP_FACES> cubemapFaces;
 
     for(int i = 0; i < NUM_CUBEMAP_FACES; ++i){
         ogl::Texture faceTexture{GL_NEAREST, GL_NEAREST, GL_CLAMP_TO_EDGE};
@@ -1585,7 +1583,7 @@ bool loadEquirectangular(std::string path, bool hdrFlowmap, unsigned &faceSize, 
     );
     Bitmap<float> equirectangularImage{static_cast<unsigned>(size.x), static_cast<unsigned>(size.y), 4, imageData.get()};
 
-    std::array<Bitmap<float>, eqr::NUM_CUBEMAP_FACES> cubemapFaces = eqr::toCubemap(equirectangularImage);
+    std::array<Bitmap<float>, NUM_CUBEMAP_FACES> cubemapFaces = eqr::toCubemap(equirectangularImage);
 
     for(int i = 0; i < NUM_CUBEMAP_FACES; ++i){
         const void* sourceImage = cubemapFaces[i].getData();

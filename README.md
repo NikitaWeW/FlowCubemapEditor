@@ -24,6 +24,10 @@ the unwrapped cube layout is the following:
 +----+----+----+
 ```
 
+When using the 6 images save / load layout, square images are expected to save / load with the following names (any supported extension):
+
+pos_x, neg_x, pos_y, neg_y, pos_z, neg_z
+
 HDR flowmaps
 ===
 
