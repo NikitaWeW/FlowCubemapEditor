@@ -1511,7 +1511,8 @@ bool loadSixImages(std::string path, bool hdrFlowmap, unsigned &faceSize, std::s
     for (auto const& dir_entry : std::filesystem::directory_iterator{path}) 
         if(std::find(names.begin(), names.end(), dir_entry.path().stem()) != names.end())
         {
-            extension = dir_entry.path().string().substr(0, dir_entry.path().string().find_last_of('.'));
+            std::string file_path = dir_entry.path().string();
+            extension = file_path.substr(file_path.find_last_of('.'), file_path.size());
             break;
         }
     if(extension == "")
