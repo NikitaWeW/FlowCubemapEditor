@@ -40,6 +40,7 @@ namespace eqr
 
     inline uvFace getUVface(glm::vec3 dir)
     { // dunno why i had to invert some directions, probably because of that coordinate system from faceCoordsToXYZ.
+        dir = glm::normalize(dir);
         glm::vec3 adir = glm::abs(dir);
 
         if (adir.x >= adir.y && adir.x >= adir.z)
@@ -74,8 +75,8 @@ namespace eqr
                 return uvFace {
                     POS_Y,
                     {
-                        ( dir.y / adir.y + 1.0f) * 0.5f,
-                        ( 1.0f - dir.x / adir.y) * 0.5f
+                        ( dir.z / adir.y + 1.0f) * 0.5f, 
+                        1.0f - ( dir.x / adir.y + 1.0f) * 0.5f, 
                     }
                 };
             }
@@ -84,8 +85,8 @@ namespace eqr
                 return uvFace {
                     NEG_Y,
                     {
-                        ( dir.x / adir.y + 1.0f) * 0.5f,
-                        ( dir.y / adir.y + 1.0f) * 0.5f
+                        ( dir.z / adir.y + 1.0f) * 0.5f, 
+                        ( dir.x / adir.y + 1.0f) * 0.5f, 
                     }
                 };
             }
@@ -149,6 +150,8 @@ namespace eqr
                 );
 
                 auto [face, uv] = getUVface(dir);
+
+                assert(uv.x >= 0 && uv.y >= 0 && uv.x <= 1 && uv.y <= 1);
 
                 glm::vec2 texel = uv * static_cast<float>(maxFaceTexel);
 
