@@ -120,9 +120,7 @@ struct Data
 
     unsigned flowMapSize = -1;
     ogl::Cubemap flowMap;
-    ogl::Cubemap textureCubemap;
-    ogl::Texture texture2d;
-    bool customCubemap;
+    ogl::Cubemap texture;
 
     ogl::ShaderProgram flowMapDrawShader;
     ogl::ShaderProgram flowMapClearShader;
@@ -196,6 +194,7 @@ void saveEquirectangular(Data &data);
 bool loadUnwrapped(std::string path, bool hdrFlowmap, unsigned &faceSize, std::stringstream &message, ogl::Cubemap &cubemap, bool postProcess);
 bool loadSixImages(std::string path, bool hdrFlowmap, unsigned &faceSize, std::stringstream &message, ogl::Cubemap &cubemap, bool postProcess);
 bool loadEquirectangular(std::string path, bool hdrFlowmap, unsigned &faceSize, std::stringstream &message, ogl::Cubemap &cubemap, bool postProcess);
+bool loadOneImage(std::string path, bool hdrFlowmap, unsigned &faceSize, std::stringstream &message, ogl::Cubemap &cubemap, bool postProcess);
 void loadCustomTexture(Data &data);
 
 int main(int argc, char **argv)
@@ -225,8 +224,7 @@ int main(int argc, char **argv)
     data.messages.push(std::move(message));
 
     ogl::Cubemap skybox{"res/textures/qwantani_dawn_puresky_4k.hdr"};
-    data.texture2d = ogl::Texture{"res/textures/water.jpg"};
-    data.customCubemap = false;
+    loadCustomTexture(data);
 
     ogl::ShaderProgram cubeShader{"shaders/prop"};
     ogl::ShaderProgram displayShader{"shaders/hdrImage"};
@@ -374,12 +372,10 @@ int main(int argc, char **argv)
 
         cubeShader.bind();
         data.flowMap.bind(0);
-        data.texture2d.bind(1);
-        data.textureCubemap.bind(2);
+        data.texture.bind(1);
         
         glUniform1i(       cubeShader.getUniform("u_showFlow"),        data.inputs.showFlow);
         glUniform1i(       cubeShader.getUniform("u_blurPreview"),     data.inputs.blurPreview);
-        glUniform1i(       cubeShader.getUniform("u_isTextureCubemap"),data.customCubemap);
         glUniform1f(       cubeShader.getUniform("u_flowIntensity"),   data.inputs.flowIntensity);
         glUniform1f(       cubeShader.getUniform("u_time"),            glfwGetTime());
         glUniformMatrix4fv(cubeShader.getUniform("u_modelMat"),        1, GL_FALSE, glm::value_ptr(glm::mat4{1.0f}));
@@ -1500,9 +1496,9 @@ bool loadUnwrapped(std::string path, bool hdrFlowmap, unsigned &faceSize, std::s
 }
 bool loadSixImages(std::string path, bool hdrFlowmap, unsigned &faceSize, std::stringstream &message, ogl::Cubemap &cubemap, bool postProcess)
 {
-    if(!std::filesystem::exists(path))
+    if(!std::filesystem::exists(path) || !std::filesystem::is_directory(path))
     {
-        message << "path \"" << path << "\" doesent exist!\n";
+        message << "directory \"" << path << "\" doesent exist!\n";
         return false;
     }
     std::string extension = "";
@@ -1600,41 +1596,69 @@ bool loadEquirectangular(std::string path, bool hdrFlowmap, unsigned &faceSize, 
     }
     return true;
 }
+bool loadOneImage(std::string path, bool hdrFlowmap, unsigned &faceSize, std::stringstream &message, ogl::Cubemap &cubemap, bool postProcess)
+{
+    glm::ivec2 size;
+    auto textureData = loadImageData(path, hdrFlowmap, postProcess, size, message);
+    if(!textureData.get()) return false;
+
+    if(size.x != size.y)
+    {
+        message << "image \"" << path << "\" is not square!";
+        return false;
+    }
+    faceSize = size.x;
+    
+    cubemap = ogl::Cubemap{0};
+    glTextureStorage2D(
+        cubemap.getRenderID(),
+        1,
+        GL_RGBA32F,
+        faceSize,
+        faceSize
+    );
+        
+    for(int i = 0; i < NUM_CUBEMAP_FACES; ++i){
+        const void* sourceImage = textureData.get();
+        glTextureSubImage3D(
+            cubemap.getRenderID(), 
+            0,       // layer
+            0, 0, i, // x,y,z
+            faceSize, faceSize, // 2D image dimensions
+            1,          // depth
+            GL_RGBA,    // format
+            GL_FLOAT,   // data type
+            sourceImage
+        );
+    }
+    return true;
+}
 void loadCustomTexture(Data &data)
 {
     MessageStream message;
     message.setData(data);
+    unsigned faceSize;
 
     switch (data.inputs.textureLayout)
     {
     case UNWRAPPED:
         {
-            unsigned faceSize;
-            bool result = loadUnwrapped(data.inputs.texturePath, data.inputs.hdrFlowmap, faceSize, message, data.textureCubemap, false);
-            if(result) data.customCubemap = true;
+            loadUnwrapped(data.inputs.texturePath, data.inputs.hdrFlowmap, faceSize, message, data.texture, false);
         }
         break;
     case SIX_IMAGES:
         {
-            unsigned faceSize;
-            bool result = loadSixImages(data.inputs.texturePath, data.inputs.hdrFlowmap, faceSize, message, data.textureCubemap, false);
-            if(result) data.customCubemap = true;
+            loadSixImages(data.inputs.texturePath, data.inputs.hdrFlowmap, faceSize, message, data.texture, false);
         }
         break;
     case EQUIRECTANGULAR:
         {
-            unsigned faceSize;
-            bool result = loadEquirectangular(data.inputs.texturePath, data.inputs.hdrFlowmap, faceSize, message, data.textureCubemap, false);
-            if(result) data.customCubemap = true;
+            loadEquirectangular(data.inputs.texturePath, data.inputs.hdrFlowmap, faceSize, message, data.texture, false);
         }
         break;
     case ONE_IMAGE:
         {
-            glm::ivec2 size;
-            ogl::Texture texture2d = load(data.inputs.texturePath, data.inputs.hdrFlowmap, false, size, message);
-            if(texture2d.getRenderID() == 0) break;
-            data.customCubemap = false;
-            data.texture2d = texture2d;
+            loadOneImage(data.inputs.texturePath, data.inputs.hdrFlowmap, faceSize, message, data.texture, false);
         }
         break;
     default:
