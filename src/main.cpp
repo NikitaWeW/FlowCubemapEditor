@@ -208,20 +208,6 @@ int main(int argc, char **argv)
 
     // ===================================
     Data data{};
-    std::stringstream message;
-    message 
-    << "Hello!\n"
-    << "This is Flow Cubemap Painter. It allows you to draw directions onto a cube, and import/export drawings using different layouts.\n";
-    data.messages.push(std::move(message));
-
-    message.clear();
-    message
-    << "You can dock the properties window by dragging it by the top header.\n"
-    << "To orbit the cube, drag with the right mouse button or use the arrow keys.\n"
-    << "Scroll to change the orbit radius.\n"
-    << "Draw using the left mouse button.\n"
-    << "Once you're done, press the 'Save As...' button, choose the layout, file type, and number of blur steps (0 means no blur), then save.\n";
-    data.messages.push(std::move(message));
 
     ogl::Cubemap skybox{"res/textures/qwantani_dawn_puresky_4k.hdr"};
     loadCustomTexture(data);

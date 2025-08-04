@@ -1,6 +1,13 @@
 Introduction
 ===
 A flow map editor, but on a cube. Inspired by this [flow map painter](https://teckartist.com/?page_id=107). This is mostly a 1500 line mess, but I think its fine for such a small project like this.
+It allows you to draw directions onto a cube, and import/export drawings using different layouts.
+
+You can dock the properties window by dragging it by the top header.
+To orbit the cube, drag with the right mouse button or use the arrow keys.
+Scroll to change the orbit radius.
+Draw using the left mouse button.
+Once you're done, press the 'Save As...' button, choose the layout, file type, and number of blur steps (0 means no blur), then save.
 
 Build
 ===
@@ -26,7 +33,7 @@ the unwrapped cube layout is the following:
 
 When using the 6 images save / load layout, square images are expected to save / load with the following names (any supported extension):
 
-pos_x, neg_x, pos_y, neg_y, pos_z, neg_z
+pos_x, neg_x, pos_y, neg_y, pos_z, neg_z.
 
 HDR flowmaps
 ===
