@@ -419,6 +419,7 @@ int main(int argc, char **argv)
             );
         }
         ImGui::DragFloat("Flow intensity", &data.inputs.flowIntensity, 0.001, 0.005, 1);
+        helpMarker("Does not affect final result.");
 
         enum { Mode_Paint, Mode_Erase, ModeCount };
         static int elem = Mode_Paint;
@@ -552,7 +553,7 @@ int main(int argc, char **argv)
             ImGui::Checkbox("HDR flowmap", &data.inputs.hdrFlowmap);
             ImGui::Separator();
 
-            ImGui::Combo("layout", &data.inputs.saveLayout, "unwrapped cube\0six images\0equirectangular\0");
+            ImGui::Combo("layout", &data.inputs.saveLayout, "unwrapped cube\0six images\0equirectangular\0one image\0");
 
             ImGui::Separator();
 
@@ -576,6 +577,9 @@ int main(int argc, char **argv)
                         break;
                     case EQUIRECTANGULAR:
                         loadEquirectangular(data.inputs.path, data.inputs.hdrFlowmap, data.flowMapSize, message, data.flowMap, true);
+                        break;
+                    case ONE_IMAGE:
+                        loadOneImage(data.inputs.path, data.inputs.hdrFlowmap, data.flowMapSize, message, data.flowMap, true);
                         break;
                     default:
                         message << "unrecognized layout!\n";
@@ -637,6 +641,18 @@ int main(int argc, char **argv)
             }
 
             ImGui::EndPopup();
+        }
+
+        {
+            ImVec2 contentRegionAvail = ImGui::GetContentRegionAvail();
+            float bottomPanelHeight = 50.0f;
+
+            ImGui::Dummy(ImVec2(0, contentRegionAvail.y - bottomPanelHeight));
+
+            ImGui::BeginChild("BottomPanel", ImVec2(0, bottomPanelHeight));
+            ImGui::TextWrapped("Flow Cubemap Painter.");
+            ImGui::TextWrapped("Copyright (c) 2025 Nikita Martynau.");
+            ImGui::EndChild();
         }
 
         ImGui::End();
@@ -1304,6 +1320,25 @@ void saveSixImages(Data &data)
 
     int const numComponents = 4;
 
+    std::string extension = "";
+    switch (data.inputs.saveType)
+    {
+    case PNG:
+        extension = ".png";
+        break;
+    case HDR:
+        extension = ".hdr";
+        break;
+    default:
+        break;
+    }
+
+    if(extension == "")
+    {
+        data.messages.push(std::stringstream{} << "unkown save file type");
+        return;
+    }
+
     for(int i = 0; i < NUM_CUBEMAP_FACES; ++i){
         ogl::Texture faceTexture{GL_NEAREST, GL_NEAREST, GL_CLAMP_TO_EDGE};
         glTextureStorage2D(faceTexture.getRenderID(), 1, GL_RGBA32F, data.flowMapSize, data.flowMapSize);
@@ -1329,7 +1364,8 @@ void saveSixImages(Data &data)
         glGetTextureImage(faceTexture.getRenderID(), 0, GL_RGBA, GL_FLOAT, data.flowMapSize * data.flowMapSize * numComponents * sizeof(float), textureData.get());
 
         std::string path = data.inputs.path;
-        path = path + '/' + std::string{names[i]};
+        path += '/' + std::string{names[i]};
+        path += extension;
 
         save(data.inputs.saveType, path, glm::uvec2{data.flowMapSize, data.flowMapSize}, numComponents, data.inputs.hdrFlowmap, textureData.get());
     }
