@@ -1202,7 +1202,8 @@ constexpr std::array<glm::uvec2, 6> cells = {
     glm::uvec2{ 2, 1 }
 };
 constexpr std::array<std::string_view, 6> names = {
-    "pos_x", "neg_x", "pos_y", "neg_y", "pos_z", "neg_z" 
+    // "pos_x", "neg_x", "pos_y", "neg_y", "pos_z", "neg_z" 
+    "right", "left", "top", "bottom", "front", "back"
 };
 constexpr float LDR_SCALE = 10.0f;
 using image_ptr = std::unique_ptr<float, decltype(&stbi_image_free)>;

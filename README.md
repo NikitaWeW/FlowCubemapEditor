@@ -1,28 +1,28 @@
+![](screenshots/image1.png)
+![](screenshots/image2.png)
+![](screenshots/image3.png)
+
 Introduction
 ===
-A flow map editor, but on a cube. Inspired by this [flow map painter](https://teckartist.com/?page_id=107). This is mostly a 1500 line mess, but I think its fine for such a small project like this.
-It allows you to draw directions onto a cube, and import/export drawings using different layouts.
+A flow map editor, but on a cube. Inspired by this [flow map painter](https://teckartist.com/?page_id=107). 
+It allows you to draw directions (flow) onto a cube, and import/export drawings using different layouts.
 
 You can dock the properties window by dragging it by the top header.
 To orbit the cube, drag with the right mouse button or use the arrow keys.
 Scroll to change the orbit radius.
 Draw using the left mouse button.
 Once you're done, press the 'Save As...' button, choose the layout, file type, and number of blur steps (0 means no blur), then save.
+Import your custom cube texture by clicking `Load custom texture`.
 
-Build
-===
+# Image formats
+The editor can save images with .png and .hdr file types.
 
-uses cmake:
-``` shell
-cmake -S . -B build
-cmake --build build
-cmake --install build --prefix build/install
-```
+The following layouts are supported for saving and loading.
 
-Usage
-===
-
-the unwrapped cube layout is the following:
+## equirectangular
+Panorama layout. A single image.
+## unwrapped cube
+A single image with the following layout:
 ```
 +----+----+----+
 | X+ | Y+ | Z+ |
@@ -30,10 +30,32 @@ the unwrapped cube layout is the following:
 | X- | Y- | Z- |
 +----+----+----+
 ```
+Or
+```
++-------+--------+-------+
+| Right | Top    | Front |
++-------+--------+-------+
+| Left  | Bottom | Back  |
++-------+--------+-------+
+```
+## six images
+A folder containing six images with the following names:
+"right", "left", "top", "bottom", "front", "back".
 
-When using the 6 images save / load layout, square images are expected to save / load with the following names (any supported extension):
+---
 
-pos_x, neg_x, pos_y, neg_y, pos_z, neg_z.
+If something is unclear or you found a bug, please create a github issue or a pull request. Thanks!
+
+Build
+===
+
+You can get the program in the [releases tab](https://github.com/NikitaWeW/FlowCubemapEditor/releases/latest), or by compiling it yourself:
+
+``` shell
+cmake -S . -B build
+cmake --build build
+cmake --install build --prefix build/install
+```
 
 HDR flowmaps
 ===
@@ -45,6 +67,3 @@ There is an option to bake the flowmap in HDR, which means values won’t be cla
     green = alpha ? -green : green;
 ```
 
----
-
-If something is unclear or you found a bug, please create a github issue or a pull request. Thanks!
