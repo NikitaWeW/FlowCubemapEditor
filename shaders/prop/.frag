@@ -46,7 +46,7 @@ void main()
 
     if(u_showFlow)
     {
-        o_color.rgb = vec3(flow, 0);
+        o_color.rgb = vec3(flow * 0.5 + 0.5, 0);
     }
     else
     {

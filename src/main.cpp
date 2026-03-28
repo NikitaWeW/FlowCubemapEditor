@@ -32,6 +32,7 @@ THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLI
 #include "glad/gl.h"
 #include "GLFW/glfw3.h"
 #include "GLFW/glfw3native.h"
+#include "imgui_internal.h"
 
 #define GLM_ENABLE_EXPERIMENTAL
 #include "glm/glm.hpp"
@@ -499,7 +500,7 @@ int main(int argc, char **argv)
         if(ImGui::BeginPopupModal("Save As", NULL, ImGuiWindowFlags_AlwaysAutoResize))
         {
             ImGui::Checkbox("HDR flowmap", &data.inputs.hdrFlowmap);
-            helpMarker("Flow direction vectors won't be clamped to the range of [0; 1], which allows more dynamic flows.\nThe cube needs to be cleared after changing this option.");
+            helpMarker("Flow direction vectors won't be clamped to the range of [0; 1], which allows more dynamic flows.");
             ImGui::Separator();
 
             ImGui::Combo("layout", &data.inputs.saveLayout, "unwrapped cube\0six images\0equirectangular\0");
@@ -599,7 +600,7 @@ int main(int argc, char **argv)
         }
         if(ImGui::BeginPopupModal("Message", NULL, ImGuiWindowFlags_AlwaysAutoResize))
         {
-            ImGui::TextWrapped(data.messages.front().str().c_str());
+            ImGui::TextWrapped("%s", data.messages.front().str().c_str());
 
             ImGui::Separator();
 
@@ -670,6 +671,9 @@ int main(int argc, char **argv)
         }
         glfwSwapBuffers(window);
         data.deltatime = std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::high_resolution_clock::now() - start).count() * 1.0E-6;
+        #ifndef NDEBUG
+        std::cout <<"\r" << data.deltatime * 1e3 << "ms / " << 1/data.deltatime << " FPS                    ";
+        #endif
     }
     
     glfwDestroyWindow(window);
@@ -847,7 +851,11 @@ bool init(GLFWwindow **window)
     glEnable(GL_DEBUG_OUTPUT);
     glDebugMessageCallback(debugCallback, nullptr);
     
+    #ifdef NDEBUG
+    glfwSwapInterval(1);
+    #else
     glfwSwapInterval(0);
+    #endif
 
     return true;
 }
